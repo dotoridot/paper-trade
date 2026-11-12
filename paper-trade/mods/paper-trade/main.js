@@ -89,6 +89,7 @@ export default class PaperTrade extends View {
       try {
         const r = await exec("bash", [`${ENGINE()}/run.sh`, "start", job]);
         if (r.code !== 0) throw new Error((r.stderr || `exit ${r.code}`).trim());
+        if (JSON.parse(r.stdout).skipped) return; // 다른 패널이 방금 자동 판단을 돌렸다.
         if (job !== "auto") this.note = job === "plan" ? "AI가 계획을 세우기 시작했습니다. 몇십 분 걸릴 수 있습니다." : "AI가 판단을 시작했습니다.";
         this.snap = this.snap && { ...this.snap, running: { job, since: kstIso() } };
       } catch (err) {

@@ -15,6 +15,8 @@ H="$PAPER_HOME"
 PAPER=(python3 -I "$ENGINE/paper.py")
 CMD="python3 -I $ENGINE/paper.py"
 mkdir -p "$H/logs"
+# Claude Code는 작업 폴더 안의 파일을 규칙 없이 읽으므로, 읽기 범위가 데이터 폴더로 한정되게 여기서 실행한다.
+cd "$H" || exit 1
 
 prompt() { sed -e "s#{{ENGINE}}#$ENGINE#g" -e "s#{{HOME}}#$H#g" "$ENGINE/prompts/$1.md"; }
 model() { [ -n "${PAPER_MODEL:-}" ] && printf -- '--model\n%s\n' "$PAPER_MODEL"; }
@@ -22,6 +24,7 @@ fail() { "${PAPER[@]}" journal 실패 "$1" >/dev/null; echo "$1" >&2; exit 1; }
 need_claude() { command -v claude >/dev/null || { echo "claude CLI가 없습니다: https://claude.com/claude-code" >&2; exit 127; }; }
 need_profile() { [ -f "$H/investor_profile.md" ] || { echo "먼저 투자 성향을 정하세요." >&2; exit 2; }; }
 need_plan() { [ -f "$H/portfolio.json" ] || { echo "먼저 계획을 세우세요." >&2; exit 2; }; }
+recent_auto() { [ -n "$(find "$H/last-auto" -mmin -25 2>/dev/null)" ]; }
 running() { [ -f "$H/ai-running" ] && kill -0 "$(cut -d' ' -f1 "$H/ai-running")" 2>/dev/null; }
 # 계획과 판단은 한 번에 하나만 돈다. 모의투자 탭은 이 파일로 진행 중인 작업을 보여 준다.
 busy() {
@@ -58,6 +61,7 @@ case "${1:-}" in
       *) echo "start plan|decide|auto" >&2; exit 64 ;;
     esac
     if running; then echo "이미 실행 중: $(cut -d' ' -f2 "$H/ai-running")" >&2; exit 75; fi
+    if [ "$2" = auto ] && recent_auto; then echo '{"skipped": "auto"}'; exit 0; fi
     nohup bash "$SELF" "$2" >> "$H/logs/start.log" 2>&1 &
     echo "{\"started\": \"$2\"}"
     ;;
@@ -88,7 +92,7 @@ case "${1:-}" in
     ;;
   auto)
     # 탭을 여러 개 열거나 다시 불러와도 자동 판단은 25분에 한 번만 돈다.
-    if [ -n "$(find "$H/last-auto" -mmin -25 2>/dev/null)" ]; then exit 0; fi
+    if recent_auto; then exit 0; fi
     touch "$H/last-auto"
     decide auto
     ;;
