@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+.DS_Store
+# 모의투자 데이터는 ~/.paper-trade에 쌓이지만, 실수로 복사되지 않게 막는다.
+state.json
+portfolio*.json
+journal.jsonl
+equity.csv
+pulse.json
+investor_profile.md
+strategy.json
+rules.json
+logs/
+# Herdr가 mod 폴더에 자동으로 쓰는 파일
+*.d.ts
+jsconfig.json
