@@ -22,18 +22,18 @@ Top to bottom, 10px padding, 8px gaps, cards are `surface` with 8px radius:
 - Every 60 seconds it reloads the account and the market board. During Korean market hours (weekdays 09:00 to 15:30 KST) it first runs `tick`, which fills open orders at live prices and applies the stop-loss rules.
 - 성향 설정 opens a new tab running `claude` with an interview prompt. It asks 7 to 10 questions one at a time (holding period, loss tolerance, max weight per stock, sectors, how to pick stocks, financial bars, roles, excluded stocks, trading pace) and writes `investor_profile.md`, `strategy.json` and `rules.json` in `~/.paper-trade`.
 - 계획 세우기 starts `run.sh plan` in the background. Claude reads the profile, scans the whole market through the engine, writes `portfolio.draft.json`, and the engine checks it against `strategy.json` before it becomes the plan. Takes 10 to 40 minutes.
-- 지금 판단 starts one decision (`run.sh decide`): hold, buy, sell or note a candidate, always ending with a journal entry. Outside market hours it does nothing.
-- 자동 판단 is off by default. When on (remembered in `localStorage`), the panel starts a decision every 30 minutes during market hours if a plan exists and nothing else is running.
-- Only one AI job runs at a time (`~/.paper-trade/ai-running`).
-- Orders placed by hand are `source: user`. The engine refuses AI buys in the first 30 minutes, on days KOSPI is down 2% or more, the day after a +10% jump, and while a holding is at a loss; the limits come from `strategy.json`.
+- 지금 판단 starts one decision (`run.sh decide`): hold, buy, sell or note a candidate, always ending with a journal entry. Outside the regular session (weekdays 09:00 to 15:30 KST) it does nothing. Naver reports `marketStatus: OPEN` during after-market trading too, so the engine also checks the clock.
+- 자동 판단 is off by default. When on (remembered in `localStorage`), the panel asks for `run.sh start auto` each minute during market hours; `auto` runs a decision only if 25 minutes have passed since the last automatic one (`~/.paper-trade/last-auto`), so several open copies of the panel never double up.
+- Only one AI job runs at a time (`~/.paper-trade/ai-running`). `run.sh start` checks for `claude`, the profile or the plan before detaching and reports the reason at once.
+- Orders placed by hand are `source: user`. Inside AI runs `run.sh` sets `PAPER_SOURCE=ai`, so every order the AI places is an AI order even without `--source ai`. The engine refuses AI buys in the first 30 minutes, on days KOSPI is down 2% or more, the day after a +10% jump, and while a holding is at a loss; the limits come from `strategy.json`.
 
 ## Built from
 
 - `mods/paper-trade/main.js`: one `View`. Uses `exec`, `run("tab.new", { name, argv })`, `appHome`, `theme`, `localStorage`, `cx.timer.every`, `TextView.markdown`, `InputState`/`Input`. `mod.json` is `{ "place": "none" }`; open it with `tab.new { name: "모의투자", mod: "paper-trade" }`.
 - `mods/paper-trade/engine/paper.py`: Python 3 standard library only. Commands the panel calls: `status`, `board`, `view SYM --tf day|week|month --count 200`, `search TEXT`, `buy|sell SYM QTY [--limit P] --source user`, `cancel ID`, `watch add|rm SYM`, `tick`. Prints JSON. Quotes, charts, order books, finance, news and themes come from Naver Finance's public JSON endpoints (`polling.finance.naver.com`, `m.stock.naver.com`, `api.stock.naver.com`).
-- `mods/paper-trade/engine/run.sh`: `onboard` (interactive claude), `plan`, `decide`, and `start plan|decide` (detaches with `nohup`, because `exec` has a 30-second limit). Claude runs with `--allowedTools` limited to reading, writing its own files in `~/.paper-trade`, `python3 -I engine/paper.py *` and web search.
+- `mods/paper-trade/engine/run.sh`: `onboard` (interactive claude), `plan`, `decide`, `auto`, and `start plan|decide|auto` (detaches with `nohup bash`, because `exec` has a 30-second limit). Claude may read only `~/.paper-trade`, edit only its own output file, and run only named engine commands: lookups (`quote`, `fin`, `news`, `theme`, `search`, `chart`, `status`) in every stage, `pulse`, `macro` and `plan` while planning, and `buy`, `sell`, `journal` only while deciding.
 - `mods/paper-trade/engine/prompts/`: `onboard.md`, `plan.md`, `decide.md`, with `{{ENGINE}}` and `{{HOME}}` filled in by `run.sh`.
-- `mods/paper-trade/engine/test_paper.py`: 69 unit tests, `python3 -m unittest test_paper` from the engine folder.
+- `mods/paper-trade/engine/test_paper.py`: 58 unit tests, `python3 -m unittest test_paper` from the engine folder.
 
 ## Watch out
 

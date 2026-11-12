@@ -40,7 +40,7 @@
   "spike_pct": 10.0,
   "open_calm_hhmm": "0930",
   "exclude": ["005930"],
-  "roles": {"대표주": {"max_pct": 30}, "부품사": {"min_pct": 50, "fin": {"years": 3, "margin": 10, "debt": 100, "quick": 100}}}
+  "roles": {"대표주": {"max_pct": 40}, "부품사": {"min_pct": 30, "fin": {"years": 2, "margin": 8, "debt": 150, "quick": 80}}}
 }
 ```
 

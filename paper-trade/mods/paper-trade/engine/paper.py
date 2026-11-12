@@ -15,9 +15,10 @@ $PAPER_HOME/strategy.json and order rules from $PAPER_HOME/rules.json; both are 
   paper.py view 000660 [--tf day|week|month] [--count 200]   차트, 호가, 투자정보
   paper.py board                                             지수와 관심 종목
   paper.py fin 000660                                        연간 재무 지표
-  paper.py compare                                           전략별 성과 비교
-  paper.py brief                                             오늘 아침 브리핑 작성
-  paper.py leaders [--apply]                                 주도주 선정, --apply는 관심 종목 교체
+  paper.py pulse                                             AI 판단 한 번에 필요한 자료
+  paper.py plan [--check] [--draft] [--reach]                AI 계획 보기와 검사
+  paper.py review final                                      검사한 초안을 계획으로 확정
+  paper.py journal 행동 "이유"                                AI 판단 기록
   paper.py watch add|rm 000660
 """
 import argparse
@@ -29,7 +30,7 @@ import sys
 import time
 import urllib.parse
 import urllib.request
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 HOME = Path(os.environ.get("PAPER_HOME") or Path.home() / ".paper-trade")
@@ -37,15 +38,11 @@ STATE = HOME / "state.json"
 EQUITY = HOME / "equity.csv"
 RULES = HOME / "rules.json"
 WATCH = HOME / "watch.json"
-STRATEGIES = HOME / "strategies.json"
 DEFAULT_WATCH = ["000660", "005930", "035420"]
-LEADERS = HOME / "leaders.json"
 PLAN = HOME / "portfolio.json"  # AI의 단기·중기 포트폴리오
 JOURNAL = HOME / "journal.jsonl"  # 30분 판단 기록
 DRAFT = HOME / "portfolio.draft.json"  # 검사 전 초안
-REVIEWS = HOME / "reviews"  # 날짜별 외부 평가(선택)
 PROFILE = HOME / "investor_profile.md"  # 온보딩에서 사용자와 함께 쓴 투자 성향
-APPROVED = {"Buy", "Overweight"}
 # 계획과 AI 매수의 한도. strategy.json이 있으면 같은 이름의 값을 덮어쓴다.
 DEFAULT_STRATEGY = {
     "min_shares": 3,  # 나눠 사고 절반 손절이 가능한 최소 수량
@@ -58,7 +55,7 @@ DEFAULT_STRATEGY = {
     "pulse_min_value_eok": 300,  # 급등 목록에서 거래가 적은 종목을 거른다
     "exclude": [],  # 사용자가 제외한 종목코드
     # 역할별 비중 한도. 비어 있으면 계획 항목의 role을 검사하지 않는다. 예:
-    # {"주도주": {"max_pct": 30}, "부품사": {"min_pct": 50, "fin": {"years": 3, "margin": 10, "debt": 100, "quick": 100}}}
+    # {"대표주": {"max_pct": 40}, "부품사": {"min_pct": 30, "fin": {"years": 2, "margin": 8, "debt": 150, "quick": 80}}}
     "roles": {},
 }
 
@@ -66,8 +63,15 @@ DEFAULT_STRATEGY = {
 def load_strategy(path):
     s = dict(DEFAULT_STRATEGY)
     if path.exists():
-        s.update(json.loads(path.read_text()))
+        s.update(read_settings(path))
     return s
+
+
+def read_settings(path):
+    try:
+        return json.loads(path.read_text())
+    except ValueError as e:
+        raise SystemExit(f"{path} 형식 오류: {e}")
 
 
 STRATEGY = load_strategy(HOME / "strategy.json")
@@ -81,7 +85,6 @@ OPEN_CALM_HHMM = STRATEGY["open_calm_hhmm"]
 PULSE_MIN_VALUE_EOK = STRATEGY["pulse_min_value_eok"]
 EXCLUDE = set(STRATEGY["exclude"])
 ROLES = STRATEGY["roles"]
-LEADER_COUNT = 4
 START_CASH = 10_000_000
 KRW_ONLY = 1.0  # 지금은 국내 주식만 다룬다. 원장의 통화 처리는 해외 확장을 위해 남겨 둔다.
 UA = "Mozilla/5.0"
@@ -118,12 +121,24 @@ def is_us(sym):
     return "." in sym
 
 
+KST = timezone(timedelta(hours=9))
+
+
+def kst_now():
+    return datetime.now(KST)
+
+
+def kr_regular_hours(t):
+    """The regular KRX session. Naver reports OPEN during pre- and after-market trading too."""
+    return t.weekday() < 5 and "0900" <= t.strftime("%H%M") < "1530"
+
+
 def fetch_quote(sym):
     kind = "worldstock/stock" if is_us(sym) else "domestic/stock"
     d = http_json(f"https://polling.finance.naver.com/api/realtime/{kind}/{sym}")["datas"][0]
     return {
         "sym": sym, "name": d["stockName"], "price": num(d["closePrice"]),
-        "change_pct": num(d["fluctuationsRatio"]), "open": d.get("marketStatus") == "OPEN",
+        "change_pct": num(d["fluctuationsRatio"]), "open": d.get("marketStatus") == "OPEN" and (is_us(sym) or kr_regular_hours(kst_now())),
         "tradable": d.get("tradableStatus", "tradable") == "tradable",
         "currency": "USD" if is_us(sym) else "KRW", "at": d.get("localTradedAt"),
     }
@@ -243,43 +258,6 @@ def board():
         except (OSError, ValueError, KeyError, IndexError):
             pass
     return {"market": market, "watch": [fetch_quote(x) for x in watchlist()]}
-
-
-def market_list(market, size):
-    rows = http_json(f"https://m.stock.naver.com/api/stocks/marketValue/{market}?page=1&pageSize={size}")["stocks"]
-    return [{"sym": x["itemCode"], "name": x["stockName"], "market": market, "value": num(x["accumulatedTradingValue"])}
-            for x in rows if x.get("stockEndType") == "stock" and not x["stockName"].endswith(("우", "우B", "우C"))]
-
-
-def leader_score(candles):
-    """Returns 20- and 60-day gains, or None unless the price holds above its 60-day average."""
-    if len(candles) < 61:
-        return None
-    closes = [c["c"] for c in candles]
-    if closes[-1] < sum(closes[-60:]) / 60:
-        return None
-    return {"r20": round((closes[-1] / closes[-21] - 1) * 100, 1), "r60": round((closes[-1] / closes[-61] - 1) * 100, 1)}
-
-
-def rank_leaders(rows):
-    """Average of the two momentum ranks, so one spike alone cannot lead."""
-    by20 = sorted(rows, key=lambda x: -x["r20"])
-    by60 = sorted(rows, key=lambda x: -x["r60"])
-    return sorted(rows, key=lambda x: by20.index(x) + by60.index(x))
-
-
-def leaders(count=LEADER_COUNT):
-    pool = [x for x in market_list("KOSPI", 60) + market_list("KOSDAQ", 40) if x["sym"] not in EXCLUDE]
-    rows = []
-    for x in sorted(pool, key=lambda r: -r["value"])[:30]:
-        score = leader_score(fetch_chart(x["sym"], "day", 70))
-        if score:
-            rows.append({**x, **score})
-        time.sleep(0.2)
-    themes = http_json("https://m.stock.naver.com/api/stocks/theme?page=1&pageSize=5")["groups"]
-    return {"as_of": now(), "method": "시가총액 상위 중 거래대금 상위 30개, 60일 평균선 위, 20일·60일 상승률 순위 평균",
-            "checked": 30, "passed": len(rows), "leaders": rank_leaders(rows)[:count],
-            "themes": [{"name": t["name"], "change_pct": num(t["changeRate"])} for t in themes]}
 
 
 def active_rows(rows):
@@ -431,40 +409,10 @@ def feasibility_errors(plan, equity, quotes):
     return errors
 
 
-def approved(signal):
-    return signal in APPROVED
-
-
-def load_reviews(day):
-    folder = REVIEWS / day
-    return {f.stem: json.loads(f.read_text()) for f in sorted(folder.glob("*.json"))} if folder.exists() else {}
-
-
-def pending_reviews(plan, done):
-    return [i["sym"] for i in plan_items(plan) if i["sym"] not in done]
-
-
-def rejected_in(plan, done):
-    return [i["sym"] for i in plan_items(plan) if i["sym"] in done and not approved(done[i["sym"]]["signal"])]
-
-
-def finalize(draft, done):
-    """Only symbols an outside review approved reach the final plan; everything else becomes cash."""
-    def keep(items):
-        return [{**i, "review": {"signal": done[i["sym"]]["signal"], "reason": done[i["sym"]]["decision"][:400]}}
-                for i in items if i["sym"] in done and approved(done[i["sym"]]["signal"])]
-
-    final = {**draft, "short": keep(draft.get("short", [])), "medium": keep(draft.get("medium", []))}
-    final["cash_pct"] = 100 - sum(i["target_pct"] for i in final["short"] + final["medium"])
-    final["rejected"] = [{"sym": s, "signal": d["signal"], "reason": d["decision"][:200]} for s, d in done.items() if not approved(d["signal"])]
-    final["as_of"] = now()
-    return final
-
-
 def buy_errors(item, pos, price, total, kospi_pct, hhmm, last_day_pct=None):
     """AI buys: none in the opening half hour or on a dip day; adds only on a real gain."""
     if hhmm < OPEN_CALM_HHMM:
-        return [f"장 시작 직후(09:30 전)에는 AI가 사지 않습니다"]
+        return [f"장 시작 직후({OPEN_CALM_HHMM[:2]}:{OPEN_CALM_HHMM[2:]} 전)에는 AI가 사지 않습니다"]
     if kospi_pct is not None and kospi_pct <= DIP_STOP_PCT:
         return [f"코스피 {kospi_pct}%: {DIP_STOP_PCT}% 이하로 빠진 날은 새로 사지도 더 사지도 않습니다"]
     if not pos:
@@ -545,7 +493,7 @@ def plan_check(plan, r):
 
 
 def finalize_unreviewed(draft):
-    """No outside review: the draft becomes final, marked so nobody reads it as approved."""
+    """The checked draft becomes final, marked so nobody reads it as reviewed by anyone else."""
     keep = lambda items: [{**i, "review": {"signal": "미평가", "reason": "외부 평가 없음"}} for i in items]
     return {**draft, "short": keep(draft.get("short", [])), "medium": keep(draft.get("medium", [])), "rejected": [], "as_of": now()}
 
@@ -602,17 +550,13 @@ def pulse(s, r):
 def rules():
     r = dict(DEFAULT_RULES)
     if RULES.exists():
-        r.update(json.loads(RULES.read_text()))
+        r.update(read_settings(RULES))
     return r
 
 
 def new_state():
     return {"cash": START_CASH, "start_cash": START_CASH, "created": now(), "next_id": 1,
             "positions": {}, "orders": [], "trades": []}
-
-
-def today():
-    return datetime.now().strftime("%Y-%m-%d")
 
 
 def now():
@@ -736,7 +680,7 @@ def fill_if_possible(s, o, q, fx, r):
 
 
 def apply_stops(s, quotes, fx, r):
-    """Channel rule: cut part at the first loss limit, the rest at the second."""
+    """Stop-loss rule: cut part at the first loss limit, the rest at the second."""
     made = []
     for sym, p in list(s["positions"].items()):
         q = quotes.get(sym)
@@ -773,23 +717,11 @@ def tick(s, r, quote_fn, fx, kospi):
     return filled, total
 
 
-def decisions(home):
-    rows = []
-    folder = Path(home) / "decisions"
-    for f in sorted(folder.glob("*.json"), reverse=True)[:8] if folder.exists() else []:
-        d = json.loads(f.read_text())
-        votes = d.get("votes") or []
-        summary = d.get("decision") or "\n".join(f"{v['persona']}: {v['signal']}" for v in votes)
-        rows.append({"sym": d["sym"], "date": d["date"], "signal": d["signal"], "summary": summary[:1500]})
-    return rows
-
-
 def status_json(s, r):
     syms = set(s["positions"]) | {o["sym"] for o in s["orders"] if o["status"] == "open"}
     quotes = {x: fetch_quote(x) for x in syms}
     fx = KRW_ONLY
     total, rows = equity(s, quotes, fx)
-    adv = sorted((HOME / "advice").glob("*.md")) if (HOME / "advice").exists() else []
     curve = []
     if EQUITY.exists():
         curve = [float(l.split(",")[1]) for l in EQUITY.read_text().splitlines()[1:]][-60:]
@@ -798,7 +730,7 @@ def status_json(s, r):
         "available": round(s["cash"] - reserved(s, lambda o: krw(o["limit"] or o["ref"], o["currency"], fx))),
         "return_pct": round((total / s["start_cash"] - 1) * 100, 2), "positions": rows,
         "orders": [o for o in s["orders"] if o["status"] == "open"], "trades": s["trades"][-10:][::-1],
-        "curve": curve, "decisions": decisions(HOME), "advice": adv[-1].read_text() if adv else "", "advice_date": adv[-1].stem if adv else "",
+        "curve": curve,
         "rules": {k: r[k] for k in ("max_position_pct", "stop_first_pct", "stop_full_pct")},
         "plan": plan_view(plan, rows) if (plan := load_plan()) else None, "journal": journal_tail(JOURNAL, 13),
         "profile": PROFILE.read_text() if PROFILE.exists() else "", "running": ai_running(HOME / "ai-running"),
@@ -815,85 +747,6 @@ def ai_running(path):
     except (ValueError, ProcessLookupError, PermissionError):
         return None
     return {"job": job, "since": datetime.fromtimestamp(int(started)).astimezone().isoformat(timespec="seconds")}
-
-
-def equity_rows(home):
-    f = Path(home) / "equity.csv"
-    if not f.exists():
-        return []
-    return [line.split(",") for line in f.read_text().splitlines()[1:]]
-
-
-def summarize(entry, base):
-    """Value one strategy's own ledger at live quotes; a missing ledger reads as its starting cash."""
-    home = Path(entry["home"])
-    home = home if home.is_absolute() else base / home
-    file = home / "state.json"
-    s = json.loads(file.read_text()) if file.exists() else new_state()
-    syms = set(s["positions"]) | {o["sym"] for o in s["orders"] if o["status"] == "open"}
-    quotes = {x: fetch_quote(x) for x in syms}
-    total, rows = equity(s, quotes, KRW_ONLY)
-    rows_csv = equity_rows(home)
-    sells = [t for t in s["trades"] if t["side"] == "sell" and t["pnl"] is not None]
-    return {"id": entry["id"], "label": entry["label"], "state": entry.get("state", "running"), "note": entry.get("note", ""),
-            "equity": round(total), "start": s["start_cash"], "return_pct": round((total / s["start_cash"] - 1) * 100, 2),
-            "cash": round(s["cash"]), "positions": rows, "open_orders": sum(o["status"] == "open" for o in s["orders"]),
-            "trades": len(s["trades"]), "wins": sum(t["pnl"] > 0 for t in sells), "closed": len(sells),
-            "curve": [float(r[1]) for r in rows_csv][-60:], "last_why": next((x.get("why") or x.get("reason") for x in reversed(s["orders"]) if x["source"] == "ai"), "")}
-
-
-def compare():
-    base = STRATEGIES.parent
-    entries = json.loads(STRATEGIES.read_text())
-    out = [summarize(e, base) for e in entries]
-    first = equity_rows(base)
-    bench = None
-    if first:
-        start = float(first[0][3])
-        bench = {"label": "코스피", "start": start, "now": fetch_kospi(), "return_pct": round((fetch_kospi() / start - 1) * 100, 2)}
-    return {"as_of": now(), "strategies": out, "benchmark": bench, "brief": latest_brief()}
-
-
-def brief_text(day, strategies):
-    """Plain morning note: what each strategy will trade today and why."""
-    lines = [f"# 모의투자 아침 브리핑 {day}", "", "가상 자금이며 투자 권유가 아닙니다.", ""]
-    total = 0
-    for x in strategies:
-        lines += [f"## {x['label']}", f"평가 {x['equity']:,}원, 수익률 {x['return_pct']:+.2f}%", ""]
-        if not x["orders"]:
-            lines += ["오늘 넣은 주문이 없습니다.", ""]
-        for o in x["orders"]:
-            total += 1
-            side = "매수" if o["side"] == "buy" else "매도"
-            price = f"지정가 {o['limit']:,.0f}원" if o["limit"] else "시장가"
-            lines += [f"- **{o['name']} {o['qty']}주 {side}** ({price}): {o.get('why') or o['reason']}"]
-        lines.append("")
-    return "\n".join(lines), total
-
-
-def morning_brief():
-    base = STRATEGIES.parent
-    rows = []
-    for entry in json.loads(STRATEGIES.read_text()):
-        home = base / entry["home"]
-        file = home / "state.json"
-        state = json.loads(file.read_text()) if file.exists() else new_state()
-        summary = summarize(entry, base)
-        summary["orders"] = [o for o in state["orders"] if o["status"] == "open"]
-        rows.append(summary)
-    day = datetime.now().strftime("%Y-%m-%d")
-    text, total = brief_text(day, rows)
-    folder = base / "briefings"
-    folder.mkdir(exist_ok=True)
-    path = folder / f"{day}.md"
-    path.write_text(text, encoding="utf-8")
-    return {"path": str(path), "orders": total}
-
-
-def latest_brief():
-    folder = STRATEGIES.parent / "briefings"
-    files = sorted(folder.glob("*.md")) if folder.exists() else []
-    return {"date": files[-1].stem, "text": files[-1].read_text(encoding="utf-8")} if files else None
 
 
 def main():
@@ -921,9 +774,6 @@ def main():
     v.add_argument("--count", type=int, default=200)
     sub.add_parser("board")
     sub.add_parser("fin").add_argument("sym")
-    sub.add_parser("compare")
-    sub.add_parser("brief")
-    sub.add_parser("leaders").add_argument("--apply", action="store_true")
     sub.add_parser("news").add_argument("sym")
     sub.add_parser("scan")
     sub.add_parser("pulse")
@@ -936,8 +786,7 @@ def main():
     plan_cmd.add_argument("--draft", action="store_true")
     plan_cmd.add_argument("--reach", action="store_true")
     review_cmd = sub.add_parser("review")
-    review_cmd.add_argument("step", choices=["pending", "rejected", "final"])
-    review_cmd.add_argument("--unreviewed", action="store_true")
+    review_cmd.add_argument("step", choices=["final"])
     j = sub.add_parser("journal")
     j.add_argument("action")
     j.add_argument("text")
@@ -945,6 +794,8 @@ def main():
     w.add_argument("action", choices=["add", "rm"])
     w.add_argument("sym")
     a = p.parse_args()
+    if a.cmd in ("buy", "sell") and os.environ.get("PAPER_SOURCE") == "ai":
+        a.source = "ai"  # run.sh가 AI 실행에 지정한다. --source를 빠뜨려도 AI 매수 제한이 적용된다.
     HOME.mkdir(parents=True, exist_ok=True)
     r = rules()
     if a.cmd == "search":
@@ -988,6 +839,9 @@ def main():
                 x["why"] = a.text
         print(json.dumps({"id": a.id, "why": a.text}, ensure_ascii=False))
     elif a.cmd == "tick":
+        if not fetch_quote("005930")["open"]:
+            print(json.dumps({"filled": 0, "skipped": "장이 열려 있지 않습니다"}, ensure_ascii=False))
+            return
         fx, kospi = KRW_ONLY, fetch_kospi()
         with Ledger() as s:
             filled, total = tick(s, r, fetch_quote, fx, kospi)
@@ -1011,7 +865,8 @@ def main():
         print(json.dumps(stop_review_now(trades), ensure_ascii=False, indent=1))
     elif a.cmd == "pulse":
         with Ledger() as s:
-            print(json.dumps(pulse(s, r), ensure_ascii=False, indent=1))  # Read 도구가 줄 단위로 읽게 여러 줄로 쓴다.
+            frozen = json.loads(json.dumps(s))  # 시세 조회 동안 원장을 잠그지 않는다.
+        print(json.dumps(pulse(frozen, r), ensure_ascii=False, indent=1))  # Read 도구가 줄 단위로 읽게 여러 줄로 쓴다.
     elif a.cmd == "theme":
         print(json.dumps(theme_members(a.no), ensure_ascii=False))
     elif a.cmd == "plan":
@@ -1029,39 +884,20 @@ def main():
             print(json.dumps(plan, ensure_ascii=False))
         else:
             errors = plan_check(plan, r)
-            if a.draft:
-                errors += [f"{x}: 오늘 외부 평가가 반려한 종목" for x in rejected_in(plan, load_reviews(today()))]
             if errors:
                 raise SystemExit("\n".join(errors))
             print(json.dumps({"ok": True}))
     elif a.cmd == "review":
-        done = load_reviews(today())
-        if a.step == "rejected":
-            print(json.dumps([{"sym": s, "signal": d["signal"], "reason": d["decision"][:1200]} for s, d in done.items() if not approved(d["signal"])], ensure_ascii=False))
-        elif not DRAFT.exists():
+        if not DRAFT.exists():
             raise SystemExit("초안 없음")
-        elif a.step == "pending":
-            print(" ".join(pending_reviews(json.loads(DRAFT.read_text()), done)))
-        else:
-            draft = json.loads(DRAFT.read_text())
-            final = finalize_unreviewed(draft) if a.unreviewed else finalize(draft, done)
-            errors = plan_check(final, r)
-            if errors:
-                raise SystemExit("\n".join(errors))
-            PLAN.write_text(json.dumps(final, ensure_ascii=False, indent=1))
-            print(json.dumps({"short": len(final["short"]), "medium": len(final["medium"]), "rejected": len(final["rejected"]), "cash_pct": final["cash_pct"]}))
+        final = finalize_unreviewed(json.loads(DRAFT.read_text()))
+        errors = plan_check(final, r)
+        if errors:
+            raise SystemExit("\n".join(errors))
+        PLAN.write_text(json.dumps(final, ensure_ascii=False, indent=1))
+        print(json.dumps({"short": len(final["short"]), "medium": len(final["medium"]), "cash_pct": final["cash_pct"]}))
     elif a.cmd == "journal":
         print(json.dumps(journal_add(JOURNAL, a.action, a.text), ensure_ascii=False))
-    elif a.cmd == "leaders":
-        out = leaders()
-        if a.apply and out["leaders"]:
-            LEADERS.write_text(json.dumps(out, ensure_ascii=False, indent=1))
-            WATCH.write_text(json.dumps([x["sym"] for x in out["leaders"]]))
-        print(json.dumps(out, ensure_ascii=False))
-    elif a.cmd == "brief":
-        print(json.dumps(morning_brief(), ensure_ascii=False))
-    elif a.cmd == "compare":
-        print(json.dumps(compare(), ensure_ascii=False))
     elif a.cmd == "fin":
         print(json.dumps(fetch_finance(a.sym), ensure_ascii=False))
     elif a.cmd == "board":

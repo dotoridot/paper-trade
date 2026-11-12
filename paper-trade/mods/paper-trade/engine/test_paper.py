@@ -3,9 +3,13 @@ import socket
 import tempfile
 import unittest
 import urllib.error
+from datetime import datetime, timedelta, timezone
 from unittest import mock
 
-import paper
+import os
+
+os.environ["PAPER_HOME"] = tempfile.mkdtemp(prefix="paper-test-")
+import paper  # noqa: E402
 
 R = dict(paper.DEFAULT_RULES)
 FX = 1300.0
@@ -146,13 +150,13 @@ class Market(unittest.TestCase):
         paper.http_json = lambda u: {"financeInfo": {
             "trTitleList": [{"key": "2025", "title": "2025.12.", "isConsensus": "N"}, {"key": "2026", "title": "2026.12.", "isConsensus": "Y"}],
             "rowList": [{"title": "부채비율", "columns": {"2025": {"value": "8.48"}}}]}}
-        f = paper.fetch_finance("013030")
+        f = paper.fetch_finance("123456")
         self.assertEqual(f["years"], ["2025.12.", "2026.12. 추정"])
         self.assertEqual(f["rows"]["부채비율"], ["8.48", None])
 
     def test_news_flattens_groups_and_limits_size(self):
         paper.http_json = lambda u: [{"items": [{"datetime": "202610071919", "officeName": "A", "title": "T", "body": "B"}]} for _ in range(3)]
-        rows = paper.fetch_news("013030", 2)
+        rows = paper.fetch_news("123456", 2)
         self.assertEqual(rows[0], {"date": "20261007", "office": "A", "title": "T", "body": "B"})
         self.assertEqual(len(rows), 2)
 
@@ -174,63 +178,6 @@ class Market(unittest.TestCase):
         v = paper.view("000660", "day", 5)
         self.assertIsNone(v["book"])
         self.assertEqual(v["infos"], [])
-
-    def test_compare_values_each_ledger_on_its_own(self):
-        with tempfile.TemporaryDirectory() as d:
-            base = paper.Path(d)
-            (base / "a").mkdir()
-            s = paper.new_state()
-            s["cash"] = s["start_cash"] / 2
-            s["positions"]["000660"] = {"name": "T", "qty": 1, "avg": 1000.0, "currency": "KRW", "cut": 0}
-            (base / "a" / "state.json").write_text(json.dumps(s))
-            real = paper.fetch_quote
-            paper.fetch_quote = lambda sym: q(price=s["start_cash"] / 2)
-            self.addCleanup(setattr, paper, "fetch_quote", real)
-            one = paper.summarize({"id": "a", "label": "A", "home": "a"}, base)
-            none = paper.summarize({"id": "b", "label": "B", "home": "b", "state": "blocked"}, base)
-        self.assertEqual(one["return_pct"], 0)
-        self.assertEqual(none["equity"], paper.START_CASH)
-        self.assertEqual(none["state"], "blocked")
-
-    def test_decisions_are_newest_first_and_summarize_votes(self):
-        with tempfile.TemporaryDirectory() as d:
-            folder = paper.Path(d) / "decisions"
-            folder.mkdir()
-            (folder / "2026-10-29-1.json").write_text(json.dumps({"sym": "1", "date": "2026-10-29", "signal": "Hold", "decision": "기다린다"}))
-            (folder / "2026-10-30-1.json").write_text(json.dumps({"sym": "1", "date": "2026-10-30", "signal": "Buy", "votes": [{"persona": "lynch", "signal": "bullish"}]}))
-            rows = paper.decisions(d)
-        self.assertEqual([r["date"] for r in rows], ["2026-10-30", "2026-10-29"])
-        self.assertEqual(rows[0]["summary"], "lynch: bullish")
-
-    def test_brief_lists_each_order_with_its_reason(self):
-        order = {"name": "하이록코리아", "qty": 3, "side": "buy", "limit": None, "why": "재무가 튼튼합니다", "reason": "x"}
-        text, total = paper.brief_text("2026-11-02", [
-            {"label": "A", "equity": 10000000, "return_pct": 0, "orders": [order]},
-            {"label": "B", "equity": 10000000, "return_pct": 0, "orders": []}])
-        self.assertEqual(total, 1)
-        self.assertIn("하이록코리아 3주 매수", text)
-        self.assertIn("재무가 튼튼합니다", text)
-        self.assertIn("오늘 넣은 주문이 없습니다", text)
-
-    def test_leader_requires_price_above_60_day_average(self):
-        up = [{"c": 100 + i} for i in range(70)]
-        down = [{"c": 200 - i} for i in range(70)]
-        self.assertEqual(paper.leader_score(up), {"r20": round((169 / 149 - 1) * 100, 1), "r60": round((169 / 109 - 1) * 100, 1)})
-        self.assertIsNone(paper.leader_score(down))
-        self.assertIsNone(paper.leader_score(up[:30]))
-
-    def test_rank_uses_both_windows(self):
-        spike = {"sym": "a", "r20": 90, "r60": 1}
-        steady = {"sym": "b", "r20": 40, "r60": 40}
-        slow = {"sym": "c", "r20": 5, "r60": 30}
-        self.assertEqual(paper.rank_leaders([spike, slow, steady])[0]["sym"], "b")
-
-    def test_market_list_drops_funds_and_preferred(self):
-        paper.http_json = lambda u: {"stocks": [
-            {"itemCode": "1", "stockName": "보통주", "stockEndType": "stock", "accumulatedTradingValue": "1,000"},
-            {"itemCode": "2", "stockName": "삼성전자우", "stockEndType": "stock", "accumulatedTradingValue": "1"},
-            {"itemCode": "3", "stockName": "ETF", "stockEndType": "etf", "accumulatedTradingValue": "1"}]}
-        self.assertEqual([x["sym"] for x in paper.market_list("KOSPI", 3)], ["1"])
 
     def test_watch_add_and_remove_without_duplicates(self):
         with tempfile.TemporaryDirectory() as d:
@@ -288,10 +235,10 @@ class MarketScan(unittest.TestCase):
                 "accumulatedTradingValueRaw": str(value), "tradableStatusCode": status}
 
     def test_only_tradable_common_stocks_remain(self):
-        saved, paper.EXCLUDE = paper.EXCLUDE, {"013030"}  # strategy.json의 exclude
+        saved, paper.EXCLUDE = paper.EXCLUDE, {"123456"}  # strategy.json의 exclude
         self.addCleanup(setattr, paper, "EXCLUDE", saved)
         rows = [self.row("000001"), self.row("000002", "가우"), self.row("000003", kind="etf"), self.row("000004", "가스팩1호"),
-                self.row("000005", status="stop"), self.row("013030", "제외 종목")]
+                self.row("000005", status="stop"), self.row("123456", "제외 종목")]
         self.assertEqual([x["sym"] for x in paper.active_rows(rows)], ["000001"])
 
     def test_row_is_reduced_to_what_a_decision_needs(self):
@@ -307,7 +254,7 @@ class MarketScan(unittest.TestCase):
         self.assertEqual(got["missing"], ["news"])
 
 
-ROLES = {"주도주": {"max_pct": 30}, "부품사": {"min_pct": 50, "fin": {"years": 3, "margin": 10.0, "debt": 100.0, "quick": 100.0}}}
+ROLES = {"대표주": {"max_pct": 40}, "부품사": {"min_pct": 30, "fin": {"years": 2, "margin": 8.0, "debt": 150.0, "quick": 80.0}}}
 
 
 class Plan(unittest.TestCase):
@@ -315,16 +262,16 @@ class Plan(unittest.TestCase):
 
     def setUp(self):
         self.saved = paper.ROLES, paper.EXCLUDE
-        paper.ROLES, paper.EXCLUDE = ROLES, {"013030"}
+        paper.ROLES, paper.EXCLUDE = ROLES, {"123456"}
 
     def tearDown(self):
         paper.ROLES, paper.EXCLUDE = self.saved
 
     def plan(self, **over):
-        item = {"sym": "000660", "name": "SK하이닉스", "theme": "AI 메모리", "role": "주도주", "target_pct": 15, "why": "근거", "exit": "조건"}
+        item = {"sym": "000660", "name": "SK하이닉스", "theme": "AI 메모리", "role": "대표주", "target_pct": 15, "why": "근거", "exit": "조건"}
         part = lambda sym, theme, pct: {**item, "sym": sym, "name": sym, "theme": theme, "role": "부품사", "target_pct": pct}
         return {"as_of": "2026-11-02", "market": {"summary": "요약", "leading": ["반도체"], "future": ["원전"]},
-                "short": [item], "medium": [part("000720", "원전", 20), part("014620", "조선", 20), part("023160", "플랜트", 10)],
+                "short": [item], "medium": [part("000101", "원전", 20), part("000102", "조선", 20), part("000103", "플랜트", 10)],
                 "cash_pct": 35, **over}
 
     def test_valid_plan_has_no_errors(self):
@@ -340,7 +287,7 @@ class Plan(unittest.TestCase):
 
     def test_excluded_symbol_is_rejected(self):
         p = self.plan()
-        p["short"][0]["sym"] = "013030"
+        p["short"][0]["sym"] = "123456"
         self.assertTrue(any("제외" in e for e in paper.plan_errors(p, 20)))
 
     def test_one_industry_group_is_capped_at_40(self):
@@ -351,14 +298,15 @@ class Plan(unittest.TestCase):
         p["medium"][0]["group"] = "건설"
         self.assertFalse(any("묶음" in e for e in paper.plan_errors(p, 30)))
 
-    def test_leaders_are_capped_and_parts_must_lead(self):
+    def test_role_totals_follow_strategy_limits(self):
         self.assertEqual(paper.plan_errors(self.plan(), 30), [])
-        p = self.plan(cash_pct=15)
-        p["short"][0]["target_pct"] = 31
+        p = self.plan(cash_pct=30)
+        p["short"][0]["target_pct"] = 41
+        p["medium"][1]["target_pct"] = 5
         p["medium"][2]["target_pct"] = 4
-        got = paper.plan_errors(p, 40)
-        self.assertTrue(any("주도주 합계 31%" in e for e in got))
-        self.assertTrue(any("부품사 합계 44%" in e for e in got))
+        got = paper.plan_errors(p, 50)
+        self.assertTrue(any("대표주 합계 41%가 40% 초과" in e for e in got))
+        self.assertTrue(any("부품사 합계 29%가 30% 미만" in e for e in got))
 
     def test_every_item_states_a_known_role(self):
         p = self.plan()
@@ -366,7 +314,7 @@ class Plan(unittest.TestCase):
         p["medium"][0]["role"] = "기타"
         got = paper.plan_errors(p, 30)
         self.assertTrue(any("000660: role 없음" in e for e in got))
-        self.assertTrue(any("000720: role은" in e for e in got))
+        self.assertTrue(any("000101: role은" in e for e in got))
 
     def test_without_roles_any_role_is_accepted(self):
         paper.ROLES = {}
@@ -382,16 +330,20 @@ class Plan(unittest.TestCase):
             path.write_text(json.dumps({"max_names": 4, "exclude": ["005930"]}))
             got = paper.load_strategy(path)
             self.assertEqual((got["max_names"], got["exclude"], got["min_shares"]), (4, ["005930"], 3))
+            path.write_text("{broken")
+            with self.assertRaises(SystemExit) as e:
+                paper.load_strategy(path)
+            self.assertIn("형식 오류", str(e.exception))
 
     def test_parts_maker_must_clear_the_financial_bar(self):
         bar = ROLES["부품사"]["fin"]
         fin = lambda op, margin, debt, quick: {"years": ["2023.12.", "2024.12.", "2025.12.", "2026.12. 추정"],
             "rows": {"영업이익": op, "영업이익률": margin, "부채비율": debt, "당좌비율": quick}}
-        hylok_like = fin(["519", "501", "589", "-"], ["27.48", "26.31", "27.46", "-"], ["8.92", "8.42", "8.48", "-"], ["876", "970", "900", "-"])
-        self.assertEqual(paper.parts_fin_errors("X", hylok_like, bar), [])
-        weak = fin(["-10", "501", "1,589", "9,999"], ["27", "26", "9.5", "50"], ["80", "90", "120", "-"], ["150", "120", "90", "-"])
+        steady = fin(["120", "135", "150", "-"], ["12.0", "12.5", "13.1", "-"], ["60", "58", "55", "-"], ["140", "150", "160", "-"])
+        self.assertEqual(paper.parts_fin_errors("X", steady, bar), [])
+        weak = fin(["-10", "-5", "1,589", "9,999"], ["27", "26", "7.5", "50"], ["80", "90", "160", "-"], ["150", "120", "70", "-"])
         got = " ".join(paper.parts_fin_errors("X", weak, bar))
-        for word in ("영업적자", "영업이익률 9.5%", "부채비율 120.0%", "당좌비율 90.0%"):
+        for word in ("영업적자", "영업이익률 7.5%", "부채비율 160.0%", "당좌비율 70.0%"):
             self.assertIn(word, got)
         self.assertEqual(paper.parts_fin_errors("X", fin(["1", "2"], ["-"], ["-"], ["-"]), bar), ["X: 부품사 재무를 확인할 수 없음"])
 
@@ -460,8 +412,8 @@ class Plan(unittest.TestCase):
     def test_view_shows_what_the_buy_guards_let_today_reach(self):
         # 손실 중이거나 추가 매수 조건에 못 미친 종목은 목표까지 살 수 없어 실제 현금이 계획보다 많아진다.
         rows = [{"sym": "000660", "name": "a", "weight": 9.5, "pnl_pct": -2.0},
-                {"sym": "000720", "name": "b", "weight": 12.0, "pnl_pct": 1.0},
-                {"sym": "014620", "name": "c", "weight": 3.0, "pnl_pct": 1.0}]
+                {"sym": "000101", "name": "b", "weight": 12.0, "pnl_pct": 1.0},
+                {"sym": "000102", "name": "c", "weight": 3.0, "pnl_pct": 1.0}]
         got = paper.plan_view(self.plan(), rows)
         loss, short_gain, below_half = got["short"][0], got["medium"][0], got["medium"][1]
         self.assertEqual((loss["reach_pct"], "손실" in loss["buy_block"]), (9.5, True))
@@ -493,49 +445,12 @@ class Feasible(unittest.TestCase):
         self.assertTrue(any("거래 불가" in e for e in got))
 
 
-class Review(unittest.TestCase):
-    DRAFT = {"as_of": "x", "market": {"summary": "s"}, "short": [{"sym": "000001", "target_pct": 10}, {"sym": "000002", "target_pct": 20}],
-             "medium": [{"sym": "000003", "target_pct": 10}], "cash_pct": 60}
-    DONE = {"000001": {"signal": "Buy", "decision": "좋음"}, "000002": {"signal": "Hold", "decision": "근거 부족"}}
-
-    def test_unreviewed_final_keeps_every_item_marked_unreviewed(self):
-        final = paper.finalize_unreviewed(self.DRAFT)
-        self.assertEqual([i["sym"] for i in paper.plan_items(final)], ["000001", "000002", "000003"])
-        self.assertEqual({i["review"]["signal"] for i in paper.plan_items(final)}, {"미평가"})
-        self.assertEqual(final["cash_pct"], 60)
-        self.assertEqual(final["rejected"], [])
-
-    def test_only_buy_and_overweight_are_approved(self):
-        self.assertEqual([paper.approved(x) for x in ("Buy", "Overweight", "Hold", "Underweight", "Sell")], [True, True, False, False, False])
-
-    def test_pending_lists_only_unreviewed_symbols(self):
-        self.assertEqual(paper.pending_reviews(self.DRAFT, self.DONE), ["000003"])
-
-    def test_rejected_symbol_in_a_draft_is_reported(self):
-        self.assertEqual(paper.rejected_in(self.DRAFT, self.DONE), ["000002"])
-
-    def test_final_keeps_approved_and_moves_rejected_weight_to_cash(self):
-        done = {**self.DONE, "000003": {"signal": "Overweight", "decision": "보통"}}
-        got = paper.finalize(self.DRAFT, done)
-        self.assertEqual([i["sym"] for i in got["short"]], ["000001"])
-        self.assertEqual([i["sym"] for i in got["medium"]], ["000003"])
-        self.assertEqual(got["cash_pct"], 80)
-        self.assertEqual(got["short"][0]["review"]["signal"], "Buy")
-
-    def test_unreviewed_symbol_never_reaches_the_final_plan(self):
-        self.assertEqual(paper.finalize(self.DRAFT, self.DONE)["medium"], [])
-
-    def test_draft_over_six_symbols_is_rejected(self):
-        items = [{"sym": f"{i:06d}", "name": "n", "theme": "t", "target_pct": 1, "why": "w", "exit": "e"} for i in range(7)]
-        got = paper.plan_errors({"market": {"summary": "s"}, "short": items, "medium": [], "cash_pct": 93}, 20)
-        self.assertTrue(any("6종목" in e for e in got))
-
-    def test_ai_may_buy_only_inside_the_final_plan(self):
-        self.assertTrue(paper.plan_allows(self.DRAFT, "000003"))
-        self.assertFalse(paper.plan_allows(self.DRAFT, "000009"))
-
-    def test_no_plan_yet_blocks_nothing(self):
-        self.assertTrue(paper.plan_allows(None, "000009"))
+class Finalize(unittest.TestCase):
+    def test_checked_draft_becomes_final_and_is_marked_unreviewed(self):
+        draft = {"short": [{"sym": "000660", "target_pct": 10}], "medium": [], "cash_pct": 90}
+        final = paper.finalize_unreviewed(draft)
+        self.assertEqual(final["short"][0]["review"]["signal"], "미평가")
+        self.assertEqual((final["cash_pct"], final["rejected"]), (90, []))
 
 
 class StopReview(unittest.TestCase):
@@ -560,6 +475,27 @@ class StopReview(unittest.TestCase):
         self.assertFalse(got["latest"]["final"])
         partial = paper.stop_review(self.TRADES, {"A": self.CANDLES["A"][:2]}, partial_day="20261106")["trades"][0]
         self.assertIsNone(partial["after"]["1"])
+
+
+class Session(unittest.TestCase):
+    """Naver says OPEN through after-market trading; only the regular session may fill orders."""
+
+    def quote_at(self, hhmm, weekday=3):
+        raw = {"datas": [{"stockName": "삼성전자", "closePrice": "100", "fluctuationsRatio": "0", "marketStatus": "OPEN",
+                          "marketSessionType": "afterMarket", "localTradedAt": "x"}]}
+        at = datetime(2026, 11, 9 + weekday, int(hhmm[:2]), int(hhmm[2:]), tzinfo=timezone(timedelta(hours=9)))
+        with mock.patch.object(paper, "http_json", return_value=raw), mock.patch.object(paper, "kst_now", return_value=at, create=True):
+            return paper.fetch_quote("005930")["open"]
+
+    def test_after_market_is_not_open(self):
+        self.assertFalse(self.quote_at("1726"))
+        self.assertFalse(self.quote_at("0850"))
+
+    def test_regular_session_is_open(self):
+        self.assertTrue(self.quote_at("1000"))
+
+    def test_weekend_is_not_open(self):
+        self.assertFalse(self.quote_at("1000", weekday=5))
 
 
 class Running(unittest.TestCase):

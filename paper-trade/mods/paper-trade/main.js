@@ -43,6 +43,11 @@ function krMarketHours(now = Date.now()) {
   return day >= 1 && day <= 5 && hhmm >= 900 && hhmm < 1530;
 }
 
+// 엔진의 시각 표기(+09:00)와 같은 모양. 버튼을 누른 직후 진행 시각을 바로 보여 줄 때 쓴다.
+function kstIso(now = Date.now()) {
+  return `${new Date(now + 9 * 3600000).toISOString().slice(0, 19)}+09:00`;
+}
+
 function loadAuto() {
   try { return localStorage.getItem(AUTO_KEY) === "on"; } catch { return false; }
 }
@@ -78,13 +83,14 @@ export default class PaperTrade extends View {
   }
 
   // 계획과 판단은 수십 분 걸려 run.sh가 백그라운드로 돌린다. 진행 상태는 status의 running으로 본다.
+  // auto는 run.sh가 마지막 자동 판단 뒤 25분이 지났을 때만 실제로 돌려, 탭이 여러 개여도 겹치지 않는다.
   startJob(job, cx) {
     cx.spawn(async cx => {
       try {
         const r = await exec("bash", [`${ENGINE()}/run.sh`, "start", job]);
         if (r.code !== 0) throw new Error((r.stderr || `exit ${r.code}`).trim());
-        this.note = job === "plan" ? "AI가 계획을 세우기 시작했습니다. 몇십 분 걸릴 수 있습니다." : "AI가 판단을 시작했습니다.";
-        this.snap = this.snap && { ...this.snap, running: { job, since: new Date().toISOString() } };
+        if (job !== "auto") this.note = job === "plan" ? "AI가 계획을 세우기 시작했습니다. 몇십 분 걸릴 수 있습니다." : "AI가 판단을 시작했습니다.";
+        this.snap = this.snap && { ...this.snap, running: { job, since: kstIso() } };
       } catch (err) {
         this.note = `AI 실행 실패: ${err.message}`;
       }
@@ -108,7 +114,7 @@ export default class PaperTrade extends View {
     if (!this.auto || !s?.plan || s.running || !krMarketHours()) return;
     if (Date.now() - this.lastDecide < DECIDE_MS) return;
     this.lastDecide = Date.now();
-    this.startJob("decide", cx);
+    this.startJob("auto", cx);
   }
 
   refresh(cx) {
@@ -218,7 +224,7 @@ export default class PaperTrade extends View {
     const hasProfile = (s.profile ?? "") !== "";
     const gated = (id, text, ok, why, onClick, active = false) => ok ? button(id, text, onClick, active)
       : button(id, text, cx => { this.note = why; cx.notify(); }).opacity(0.45);
-    const status = job ? `${job === "plan" ? "계획 작성" : "판단"} 중 · ${s.running.since.slice(11, 16)}부터`
+    const status = job ? `${job === "plan" ? "계획 작성" : job === "auto" ? "자동 판단" : "판단"} 중 · ${s.running.since.slice(11, 16)}부터`
       : !hasProfile ? "먼저 투자 성향을 설정하세요. AI가 질문하고 성향 파일을 써 줍니다."
       : !s.plan ? "성향이 준비됐습니다. 계획을 세우면 AI가 단기·중기 포트폴리오를 만듭니다."
       : `계획 ${s.plan.as_of?.slice(5, 16).replace("T", " ") ?? ""} · 자동 판단 ${this.auto ? "켜짐 (장중 30분마다)" : "꺼짐"}`;
@@ -259,7 +265,7 @@ export default class PaperTrade extends View {
         .child(div().flex_none().text_color(tone(p.pnl_pct)).child(`${commas(p.price)} ${signed(p.pnl_pct)}`))))
       .children(s.orders.map(o => h_flex().id(`o-${o.id}`).justify_between().gap(6).text_size(12)
         .child(div().truncate().text_color(t.muted).child(`#${o.id} ${o.name} ${o.side === "buy" ? "매수" : "매도"} ${o.qty}주 · ${o.source === "ai" ? "AI" : "직접"}`))
-        .child(div().id(`c-${o.id}`).flex_none().text_color(t.dim).cursor_pointer().hover(x => x.text_color(t.foreground)).child("취소")
+        .child(div().id(`cancel-${o.id}`).flex_none().text_color(t.dim).cursor_pointer().hover(x => x.text_color(t.foreground)).child("취소")
           .on_click((_e, cx) => this.act(["cancel", String(o.id)], `주문 ${o.id} 취소`, cx)))))
       .children(s.trades.slice(0, 3).map(x => div().text_size(11).text_color(t.dim).truncate()
         .child(`${x.at.slice(5, 16).replace("T", " ")} ${x.side === "buy" ? "매수" : "매도"} ${x.name} ${x.qty}주`)))).flex_1();
@@ -275,15 +281,15 @@ export default class PaperTrade extends View {
         .child(div().flex_none().text_color(tone(q.change_pct)).child(`${commas(q.price)} ${signed(q.change_pct)}`))))).flex_1();
     const profile = card("내 투자 성향", v_flex().id("profile").flex_1().min_h(0).overflow_y_scrollbar().text_size(12).text_color(t.foreground)
       .child(hasProfile ? TextView.markdown("paper-profile", s.profile) : div().text_color(t.dim).child("아직 성향이 없습니다. 위의 \"성향 설정\"을 누르세요."))).flex_1();
-    const planRows = items => v_flex().gap(4).id(`plan-${items === s.plan?.short ? "short" : "medium"}`).flex_1().min_h(0).overflow_y_scrollbar()
+    const planRows = (key, items) => v_flex().gap(4).id(`plan-${key}`).flex_1().min_h(0).overflow_y_scrollbar()
       .children(rows(items ?? [], "계획이 아직 없습니다.", i => v_flex().id(`plan-${i.sym}`).gap(1).text_size(12).cursor_pointer()
         .hover(x => x.bg(t.hover)).on_click((_e, cx) => this.pick(i.sym, cx))
         .child(h_flex().justify_between().gap(6)
           .child(div().truncate().text_color(t.foreground).child(i.name))
           .child(div().flex_none().text_color(i.weight > 0 ? t.foreground : t.dim).child(`${i.weight.toFixed(1)} / ${i.target_pct}%`)))
         .child(div().text_size(11).text_color(t.dim).truncate().child(`${i.theme}${i.role ? ` · ${i.role}` : ""}`))));
-    const planShort = card("단기 포트폴리오 · 현재 / 목표", planRows(s.plan?.short)).flex_1();
-    const planMedium = card("중기 포트폴리오 · 현재 / 목표", planRows(s.plan?.medium)).flex_1();
+    const planShort = card("단기 포트폴리오 · 현재 / 목표", planRows("short", s.plan?.short)).flex_1();
+    const planMedium = card("중기 포트폴리오 · 현재 / 목표", planRows("medium", s.plan?.medium)).flex_1();
     const planMarket = card(`시장 판단 · 현금 목표 ${s.plan?.cash_pct ?? "-"}%`, v_flex().gap(4).id("plan-market").flex_1().min_h(0).overflow_y_scrollbar().text_size(12)
       .child(div().text_color(t.foreground).child(s.plan?.market?.summary ?? "계획이 아직 없습니다."))
       .children((s.plan?.market?.leading ?? []).map(x => div().text_color(t.muted).child(`주도 · ${x}`)))
