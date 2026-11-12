@@ -9,9 +9,10 @@
 set -u
 ENGINE="$(cd "$(dirname "$0")" && pwd)"
 SELF="$ENGINE/run.sh"
-export PAPER_HOME="${PAPER_HOME:-$HOME/.paper-trade}"
+H="${PAPER_HOME:-$HOME/.paper-trade}"
+case "$H" in /*) ;; *) H="$PWD/$H" ;; esac  # 아래에서 cd하므로 절대경로로 바꾼다.
+export PAPER_HOME="$H"
 export TZ=Asia/Seoul
-H="$PAPER_HOME"
 PAPER=(python3 -I "$ENGINE/paper.py")
 CMD="python3 -I $ENGINE/paper.py"
 mkdir -p "$H/logs"
@@ -97,5 +98,5 @@ case "${1:-}" in
     decide auto
     ;;
   *)
-    sed -n '2,8p' "$0"; exit 64 ;;
+    sed -n '2,8p' "$SELF"; exit 64 ;;
 esac
