@@ -1,78 +1,95 @@
-# 모의투자 (Paper Trade) for Herdr
+# Paper Trade for Herdr
 
-가상 자금 1,000만 원으로 국내 주식을 실시간 시세에 사고파는 [Herdr](https://herdr.dev) 패널입니다. 내 투자 성향을 AI에게 알려 주면, AI가 그 성향대로 포트폴리오를 짜고 장중 30분마다 매매하면서 왜 샀는지 쉬운 말로 남깁니다. 실제 증권 계좌나 실제 돈은 쓰지 않습니다.
+**An AI paper trader for Korean stocks.** Tell an AI how you invest; it writes your investor profile, builds a portfolio from it, and trades 10,000,000 KRW of virtual money on live KOSPI and KOSDAQ prices, explaining every trade in plain words. No broker account, no API key, no real money.
 
-A Korean-stock paper-trading panel for Herdr. Teach an AI your investing style, let it build a portfolio and trade virtual money on live KOSPI/KOSDAQ prices, and read why it made each trade.
+![Paper Trade](paper-trade/preview.png)
 
-![모의투자](paper-trade/preview.png)
+## What you get
 
-## 설치
+- **A trading desk in one panel**: live quotes, candle chart with moving averages, order book, key facts and investor flows, an order form, holdings and a watchlist.
+- **An AI that trades your way**:
+  1. **Set up profile**: Claude interviews you (holding period, loss tolerance, position size, sectors, how you pick stocks) and writes `investor_profile.md`. Limits the engine enforces go to `strategy.json` and `rules.json`.
+  2. **Make plan**: Claude scans the whole market and builds a short- and medium-term portfolio from your profile. The engine checks position limits, excluded names and financial bars before the plan takes effect. Takes 10-40 minutes.
+  3. **Decide now** or **Auto-trade**: during the regular session (weekdays 09:00-15:30 KST) Claude holds, buys or sells against the plan and logs why. Auto-trade is off by default; when on, it runs about every 30 minutes.
+- **Manual trading** too: click a price in the order book to use it as a limit. Orders fill only during the regular session.
 
-Herdr에서 에이전트에게 이렇게 말하면 됩니다.
+The panel is in English. Stock names come from the market data and are in Korean. Claude talks to you in whatever language you write in.
+
+## Install
+
+Ask your Herdr agent:
 
 ```
-github.com/dotoridot/paper-trade 의 paper-trade 모드를 추가해 줘
+Add the paper-trade mod from github.com/dotoridot/paper-trade
 ```
 
-직접 설치하려면 `paper-trade/mods/paper-trade` 폴더를 `~/.config/herdr-app/mods/`에 복사하고, 탭으로 엽니다.
+Or copy `paper-trade/mods/paper-trade` into `~/.config/herdr-app/mods/` and open it:
 
 ```sh
 herdr-app check ~/.config/herdr-app/mods/paper-trade
-herdr-app do tab.new --name 모의투자 --mod paper-trade
+herdr-app do tab.new --name "Paper Trade" --mod paper-trade
 ```
 
-필요한 것:
+Requirements:
 
-- `python3` (표준 라이브러리만 사용)
-- `bash`
-- AI 기능을 쓰려면 로그인된 [Claude Code](https://claude.com/claude-code) CLI(`claude`). 없어도 직접 주문은 됩니다.
+- `python3` (standard library only) and `bash`
+- For the AI features, a signed-in [Claude Code](https://claude.com/claude-code) CLI (`claude`). Manual trading works without it.
 
-## 쓰는 법
+## Where the prices come from
 
-1. **성향 설정**: 새 탭에서 Claude가 투자 기간, 손절 기준, 종목당 비중, 좋아하는 분야, 종목 고르는 기준 등을 하나씩 묻고 `~/.paper-trade/investor_profile.md`를 써 줍니다. 엔진이 직접 지키는 한도는 `strategy.json`과 `rules.json`에 들어갑니다.
-2. **계획 세우기**: AI가 성향대로 시장 전체를 훑어 단기와 중기 포트폴리오를 만듭니다. 10~40분 걸립니다. 엔진이 비중 한도, 제외 종목, 재무 기준을 검사한 뒤 확정합니다.
-3. **지금 판단** 또는 **자동 판단**: 정규장(평일 09:00~15:30)에 AI가 계획대로 사거나 팔거나 유지하고, 판단마다 기록을 남깁니다. 자동 판단은 기본으로 꺼져 있고, 켜면 장중 30분 남짓마다 한 번 돕니다.
-4. 직접 주문도 됩니다. 호가를 누르면 지정가로 들어가고, 정규장에만 체결됩니다. 시간외 거래는 다루지 않습니다.
+No sign-up or key is needed. `engine/paper.py` reads the public JSON endpoints that Naver Finance's own web and mobile pages use:
 
-## 알아 둘 점
+| Data | Endpoint |
+| --- | --- |
+| Live price, indices | `polling.finance.naver.com/api/realtime/domestic/...` |
+| Daily, weekly, monthly candles | `api.stock.naver.com/chart/domestic/item/<code>/<tf>` |
+| Order book, key facts, investor flows | `m.stock.naver.com/api/stock/<code>/askingPrice`, `/integration` |
+| Financials, news, themes, search | `m.stock.naver.com/api/...`, `front-api/search/autoComplete` |
 
-- **투자 권유가 아닙니다.** AI의 판단은 틀릴 수 있고, 모의 결과는 실제 수익을 보장하지 않습니다.
-- AI 기능은 내 Claude 사용량을 씁니다. 계획 한 번이 수십 번의 도구 호출을 합니다.
-- 시세는 네이버 증권의 공개 JSON 주소에서 받습니다. 공식 API가 아니어서 바뀌거나 막힐 수 있습니다.
-- 국내 주식만 다룹니다. 수수료 0.015%, 매도세 0.20%, 시장가 슬리피지 0.05%를 반영합니다.
-- 패널은 `python3`, `bash`, `claude`를 실행하고 네트워크에 접속합니다. 데이터는 `~/.paper-trade`(또는 `$PAPER_HOME`)에만 씁니다.
-- Claude 모델을 정하려면 `PAPER_MODEL` 환경 변수를 씁니다. 없으면 `claude` 기본 설정을 따릅니다.
+These are not an official API, so they can change or be blocked without notice. When a request fails, the panel keeps the last data and says so.
 
-## 터미널에서 쓰기
+## Good to know
 
-엔진은 패널 없이도 동작합니다.
+- **Not investment advice.** The AI can be wrong, and paper results promise nothing about real returns.
+- The AI features use your own Claude plan. One plan run makes dozens of tool calls.
+- Korean stocks only. Fees (0.015%), the sell tax (0.20%) and market-order slippage (0.05%) are simulated.
+- The panel runs `python3`, `bash` and `claude` and reaches the network. It writes only to `~/.paper-trade` (or `$PAPER_HOME`).
+- Pick a Claude model with `PAPER_MODEL`; otherwise your `claude` default is used.
+
+## From a terminal
+
+The engine works without the panel:
 
 ```sh
 E=~/.config/herdr-app/mods/paper-trade/engine
-python3 -I $E/paper.py search 하이닉스
+python3 -I $E/paper.py search hynix
 python3 -I $E/paper.py buy 000660 1 --limit 1300000
 python3 -I $E/paper.py status
-bash $E/run.sh onboard   # 성향 대화
-bash $E/run.sh plan      # 계획
-bash $E/run.sh decide    # 판단 한 번
-bash $E/run.sh start plan  # 백그라운드로 계획
+bash $E/run.sh onboard      # profile interview
+bash $E/run.sh plan         # build the plan
+bash $E/run.sh decide       # one decision
+bash $E/run.sh start plan   # plan in the background
 ```
 
-테스트: `cd $E && python3 -m unittest test_paper`
+Tests: `cd $E && python3 -m unittest test_paper`
 
-## 구성
+## Layout
 
 ```
 paper-trade/
-  RECIPE.md              다른 에이전트가 이 패널을 처음부터 만들 수 있는 설명
+  RECIPE.md              brief another agent can rebuild this panel from
   preview.png
   mods/paper-trade/
-    main.js, mod.json    Herdr 패널
-    engine/paper.py      시세, 원장, 체결, 계획 검사
-    engine/run.sh        AI 실행 (claude CLI)
-    engine/prompts/      성향 대화, 계획, 판단 프롬프트
+    main.js, mod.json    the Herdr panel
+    engine/paper.py      quotes, ledger, fills, plan checks
+    engine/run.sh        AI runner (claude CLI)
+    engine/prompts/      profile interview, plan and decision prompts
     engine/test_paper.py
 ```
+
+## 한국어 안내
+
+가상 자금 1,000만 원으로 국내 주식을 실시간 시세에 사고파는 Herdr 패널입니다. "Set up profile"을 누르면 Claude가 투자 성향을 묻고(한국어로 답하면 한국어로 진행), 그 성향대로 포트폴리오를 짜고 장중에 매매하며 이유를 남깁니다. 시세는 네이버 증권 공개 JSON에서 받아 별도 인증이 필요 없습니다. 투자 권유가 아닙니다.
 
 ## License
 
