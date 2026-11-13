@@ -9,8 +9,8 @@
 set -u
 ENGINE="$(cd "$(dirname "$0")" && pwd)"
 SELF="$ENGINE/run.sh"
-# Print usage before touching the data folder, so a bare `run.sh` creates nothing.
-case "${1:-}" in start|onboard|plan|decide|auto) ;; *) sed -n '2,8p' "$SELF"; exit 64 ;; esac
+# Print usage before touching the data folder, so a bare or mistyped command creates nothing.
+case "${1:-} ${2:-}" in "start plan"|"start decide"|"start auto"|onboard\ *|plan\ *|decide\ *|auto\ *) ;; *) sed -n '2,8p' "$SELF"; exit 64 ;; esac
 H="${PAPER_HOME:-$HOME/.paper-trade}"
 case "$H" in /*) ;; *) H="$PWD/$H" ;; esac  # make it absolute, since we cd below
 export PAPER_HOME="$H"
