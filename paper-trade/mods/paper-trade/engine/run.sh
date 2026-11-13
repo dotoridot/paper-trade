@@ -1,41 +1,43 @@
 #!/usr/bin/env bash
-# 모의투자 AI 실행기. 모의투자 탭의 버튼이 부르고, 터미널에서 직접 불러도 된다.
-#   run.sh onboard   투자 성향 대화 (대화형 claude)
-#   run.sh plan      성향대로 단기·중기 계획 작성
-#   run.sh decide    장중 판단 한 번 (정규장이 아니면 아무것도 하지 않음)
-#   run.sh auto      자동 판단: 마지막 자동 판단 뒤 25분이 지났을 때만 decide
-#   run.sh start plan|decide|auto   위 작업을 백그라운드로 시작 (탭의 exec는 30초 제한)
-# 환경 변수: PAPER_HOME(데이터, 기본 ~/.paper-trade), PAPER_MODEL(claude 모델, 기본은 claude 설정)
+# Paper Trade AI runner. The panel's buttons call it; you can also run it yourself.
+#   run.sh onboard   interview about how you invest (interactive claude)
+#   run.sh plan      build a short- and medium-term plan from your profile
+#   run.sh decide    one market-hours decision (does nothing outside the regular session)
+#   run.sh auto      automatic decision: decide only if the last automatic one was 25+ minutes ago
+#   run.sh start plan|decide|auto   start one of the above in the background (the panel's exec has a 30 s limit)
+# Environment: PAPER_HOME (data, default ~/.paper-trade), PAPER_MODEL (claude model, default: your claude setting)
 set -u
 ENGINE="$(cd "$(dirname "$0")" && pwd)"
 SELF="$ENGINE/run.sh"
+# Print usage before touching the data folder, so a bare or mistyped command creates nothing.
+case "${1:-} ${2:-}" in "start plan"|"start decide"|"start auto"|onboard\ *|plan\ *|decide\ *|auto\ *) ;; *) sed -n '2,8p' "$SELF"; exit 64 ;; esac
 H="${PAPER_HOME:-$HOME/.paper-trade}"
-case "$H" in /*) ;; *) H="$PWD/$H" ;; esac  # 아래에서 cd하므로 절대경로로 바꾼다.
+case "$H" in /*) ;; *) H="$PWD/$H" ;; esac  # make it absolute, since we cd below
 export PAPER_HOME="$H"
 export TZ=Asia/Seoul
 PAPER=(python3 -I "$ENGINE/paper.py")
 CMD="python3 -I $ENGINE/paper.py"
 mkdir -p "$H/logs"
-# Claude Code는 작업 폴더 안의 파일을 규칙 없이 읽으므로, 읽기 범위가 데이터 폴더로 한정되게 여기서 실행한다.
+# Claude Code reads files in its working folder without a rule, so run from the data folder to keep reads there.
 cd "$H" || exit 1
 
 prompt() { sed -e "s#{{ENGINE}}#$ENGINE#g" -e "s#{{HOME}}#$H#g" "$ENGINE/prompts/$1.md"; }
 model() { [ -n "${PAPER_MODEL:-}" ] && printf -- '--model\n%s\n' "$PAPER_MODEL"; }
-fail() { "${PAPER[@]}" journal 실패 "$1" >/dev/null; echo "$1" >&2; exit 1; }
-need_claude() { command -v claude >/dev/null || { echo "claude CLI가 없습니다: https://claude.com/claude-code" >&2; exit 127; }; }
-need_profile() { [ -f "$H/investor_profile.md" ] || { echo "먼저 투자 성향을 정하세요." >&2; exit 2; }; }
-need_plan() { [ -f "$H/portfolio.json" ] || { echo "먼저 계획을 세우세요." >&2; exit 2; }; }
+fail() { "${PAPER[@]}" journal failed "$1" >/dev/null; echo "$1" >&2; exit 1; }
+need_claude() { command -v claude >/dev/null || { echo "claude CLI not found: https://claude.com/claude-code" >&2; exit 127; }; }
+need_profile() { [ -f "$H/investor_profile.md" ] || { echo "Set up your profile first." >&2; exit 2; }; }
+need_plan() { [ -f "$H/portfolio.json" ] || { echo "Make a plan first." >&2; exit 2; }; }
 recent_auto() { [ -n "$(find "$H/last-auto" -mmin -25 2>/dev/null)" ]; }
 running() { [ -f "$H/ai-running" ] && kill -0 "$(cut -d' ' -f1 "$H/ai-running")" 2>/dev/null; }
-# 계획과 판단은 한 번에 하나만 돈다. 모의투자 탭은 이 파일로 진행 중인 작업을 보여 준다.
+# One plan or decision at a time. The panel reads this file to show the running job.
 busy() {
-  if running; then echo "이미 실행 중: $(cut -d' ' -f2 "$H/ai-running")" >&2; exit 75; fi
+  if running; then echo "Already running: $(cut -d' ' -f2 "$H/ai-running")" >&2; exit 75; fi
   echo "$$ $1 $(date +%s)" > "$H/ai-running"
   trap 'rm -f "$H/ai-running"' EXIT
 }
-# AI가 부르는 엔진 명령. 조회 명령은 모든 단계에, 주문은 판단 단계에만 연다.
+# Engine commands the AI may run: lookups in every stage, orders only while deciding.
 LOOKUP=("Bash($CMD quote *)" "Bash($CMD fin *)" "Bash($CMD news *)" "Bash($CMD theme *)" "Bash($CMD search *)" "Bash($CMD chart *)" "Bash($CMD status)")
-# AI 실행 중의 주문은 --source를 빠뜨려도 AI 주문으로 다뤄 엔진의 매수 제한이 걸린다.
+# Orders inside AI runs count as AI orders even without --source, so the engine's buy limits apply.
 export PAPER_SOURCE=ai
 
 decide() {
@@ -43,25 +45,25 @@ decide() {
   busy "$1"
   exec >> "$H/logs/decide-$(date +%F).log" 2>&1
   echo "== $(date) $1"
-  "${PAPER[@]}" pulse > "$H/pulse.tmp" || fail "시장 자료를 받지 못해 이번 회차를 건너뜁니다."
+  "${PAPER[@]}" pulse > "$H/pulse.tmp" || fail "Could not fetch market data; skipping this round."
   mv "$H/pulse.tmp" "$H/pulse.json"
   python3 -I -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1]))["market_open"] else 3)' "$H/pulse.json"
   [ $? -eq 3 ] && { echo "market closed"; exit 0; }
   claude -p "$(prompt decide)" $(model) --no-session-persistence --disable-slash-commands --strict-mcp-config \
     --tools Read Bash WebSearch \
     --allowedTools "Read(/$H/**)" "${LOOKUP[@]}" "Bash($CMD buy *)" "Bash($CMD sell *)" "Bash($CMD journal *)" "WebSearch" < /dev/null \
-    || fail "판단 실행 실패(종료 코드 $?)."
+    || fail "Decision run failed (exit $?)."
 }
 
 case "${1:-}" in
   start)
-    # 탭의 exec는 30초 제한이 있어 오래 걸리는 작업을 떼어 내 돌린다. 시작할 수 없는 이유는 여기서 바로 알린다.
+    # The panel's exec has a 30 s limit, so long jobs are detached. Report why a job cannot start right here.
     case "${2:-}" in
       plan) need_claude; need_profile ;;
       decide|auto) need_claude; need_plan ;;
       *) echo "start plan|decide|auto" >&2; exit 64 ;;
     esac
-    if running; then echo "이미 실행 중: $(cut -d' ' -f2 "$H/ai-running")" >&2; exit 75; fi
+    if running; then echo "Already running: $(cut -d' ' -f2 "$H/ai-running")" >&2; exit 75; fi
     if [ "$2" = auto ] && recent_auto; then echo '{"skipped": "auto"}'; exit 0; fi
     nohup bash "$SELF" "$2" >> "$H/logs/start.log" 2>&1 &
     echo "{\"started\": \"$2\"}"
@@ -82,17 +84,17 @@ case "${1:-}" in
       --tools Read Edit Write Bash WebSearch \
       --allowedTools "Read(/$H/**)" "Edit(/$H/portfolio.draft.json)" "${LOOKUP[@]}" "Bash($CMD pulse)" "Bash($CMD macro)" \
       "Bash($CMD plan *)" "WebSearch" < /dev/null \
-      || fail "계획 작성 실패(종료 코드 $?)."
-    "${PAPER[@]}" plan --check --draft || fail "계획 초안이 검사를 통과하지 못했습니다."
-    out=$("${PAPER[@]}" review final 2>&1) || fail "계획 확정 실패: $out"
-    "${PAPER[@]}" journal "계획 확정" "$out" >/dev/null
+      || fail "Planning run failed (exit $?)."
+    "${PAPER[@]}" plan --check --draft || fail "The plan draft did not pass the checks."
+    out=$("${PAPER[@]}" review final 2>&1) || fail "Could not finalize the plan: $out"
+    "${PAPER[@]}" journal "plan ready" "$out" >/dev/null
     echo "done $out"
     ;;
   decide)
     decide decide
     ;;
   auto)
-    # 탭을 여러 개 열거나 다시 불러와도 자동 판단은 25분에 한 번만 돈다.
+    # However many panels are open or reloaded, automatic decisions run at most every 25 minutes.
     if recent_auto; then exit 0; fi
     touch "$H/last-auto"
     decide auto

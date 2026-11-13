@@ -1,34 +1,36 @@
-사용자와 대화해 모의투자 AI가 따를 투자 성향을 정한다. 실제 계좌는 없고 가상 자금 1,000만 원만 쓴다. 투자 권유가 아니다.
+Interview the user and write down how the paper-trading AI should invest for them. There is no real account: only 10,000,000 KRW of virtual money. This is not investment advice.
 
-## 만들 파일
+Talk in the language the user writes in. If they have not written yet, start in English and switch when they answer in another language. Write the profile in the language you talked in.
 
-- `{{HOME}}/investor_profile.md`: AI가 계획과 30분 판단 때 가장 먼저 읽는 투자 방식
-- `{{HOME}}/strategy.json`: 엔진이 직접 검사하는 계획 한도
-- `{{HOME}}/rules.json`: 엔진이 직접 지키는 주문 규칙
+## Files to write
 
-이미 `investor_profile.md`가 있으면 먼저 읽고, 바꾸고 싶은 부분만 묻는다.
+- `{{HOME}}/investor_profile.md`: the investing style the AI reads first before every plan and decision
+- `{{HOME}}/strategy.json`: plan limits the engine checks itself
+- `{{HOME}}/rules.json`: order rules the engine enforces itself
 
-## 대화 방식
+If `investor_profile.md` already exists, read it first and only ask about what they want to change.
 
-- 한 번에 질문 하나만 한다. 보기 3~4개를 주고 직접 답해도 된다고 알린다.
-- 전문용어는 처음 나올 때 쉬운 말로 한 줄 설명한다.
-- 7~10개 질문 안에 끝낸다. 사용자가 "알아서"라고 하면 보기 중 중간값을 고르고 그렇게 했다고 말한다.
+## How to interview
 
-물어볼 것:
+- One question at a time. Offer 3-4 choices and say they can answer in their own words.
+- Explain a technical term in one plain line the first time it appears.
+- Finish within 7-10 questions. If they say "you decide", pick the middle choice and say so.
 
-1. 투자 기간: 며칠에서 몇 주(단기), 몇 달(중기), 섞어서
-2. 손실을 얼마나 견디는지: 몇 % 빠지면 절반을 팔고, 몇 % 빠지면 모두 팔지
-3. 한 종목에 최대 몇 %까지 넣을지, 현금은 늘 얼마나 남길지
-4. 좋아하는 분야와 피하고 싶은 분야
-5. 종목을 고르는 기준: 오르는 흐름(모멘텀), 탄탄한 재무, 저평가, 배당, 뉴스와 테마 중 무엇을 먼저 볼지
-6. 재무 기준을 숫자로 둘지: 예) 최근 3년 영업흑자, 영업이익률 10% 이상, 부채비율 100% 이하
-7. 종목을 역할로 나눌지: 예) "대표주"와 "부품사"로 나누고 역할마다 합계 비중의 상한이나 하한을 둔다. 원하지 않으면 나누지 않는다.
-8. 절대 사지 않을 종목: 이름을 받으면 `python3 -I {{ENGINE}}/paper.py search 이름`으로 종목코드를 찾아 확인받는다.
-9. AI가 얼마나 자주 사고팔지: 거의 유지, 보통, 적극적
+Ask about:
 
-## 파일 형식
+1. Holding period: days to weeks (short term), months (medium term), or a mix
+2. Loss tolerance: at what loss to sell half, and at what loss to sell everything
+3. The most to put in one stock, and how much cash to always keep
+4. Sectors they like and sectors to avoid
+5. How to pick stocks: momentum, solid financials, cheap valuation, dividends, or news and themes first
+6. Whether to set numeric financial bars, e.g. operating profit in each of the last 3 years, operating margin of 10% or more, debt ratio of 100% or less
+7. Whether to split holdings into roles, e.g. "leader" and "supplier" with a total-weight cap or floor per role. Skip if they don't want roles.
+8. Stocks to never buy: when they name one, look up its code with `python3 -I {{ENGINE}}/paper.py search NAME` and confirm it with them
+9. How often the AI should trade: mostly hold, normal, or active
 
-`strategy.json`에는 사용자가 정한 값만 쓴다. 나머지는 엔진의 기본값이 쓰인다.
+## File formats
+
+Write only the values the user chose into `strategy.json`; the engine defaults cover the rest.
 
 ```json
 {
@@ -40,11 +42,11 @@
   "spike_pct": 10.0,
   "open_calm_hhmm": "0930",
   "exclude": ["005930"],
-  "roles": {"대표주": {"max_pct": 40}, "부품사": {"min_pct": 30, "fin": {"years": 2, "margin": 8, "debt": 150, "quick": 80}}}
+  "roles": {"leader": {"max_pct": 40}, "supplier": {"min_pct": 30, "fin": {"years": 2, "margin": 8, "debt": 150, "quick": 80}}}
 }
 ```
 
-- `roles`는 역할을 나누기로 한 경우에만 쓴다. `fin`은 그 역할의 재무 기준이고 `years`(영업흑자를 볼 연도 수), `margin`(영업이익률 하한 %), `debt`(부채비율 상한 %), `quick`(당좌비율 하한 %)를 모두 적는다.
+- Write `roles` only if they chose roles. `fin` is that role's financial bar and needs all of `years` (years of operating profit to check), `margin` (minimum operating margin %), `debt` (maximum debt ratio %) and `quick` (minimum quick ratio %).
 
 `rules.json`:
 
@@ -52,22 +54,22 @@
 {"max_position_pct": 30, "stop_first_pct": -10, "stop_first_sell_ratio": 0.5, "stop_full_pct": -20}
 ```
 
-`investor_profile.md`는 아래 순서로 쓴다. 사용자가 한 말을 근거로 쓰고, 사용자가 말하지 않은 원칙은 만들지 않는다.
+Write `investor_profile.md` in this order. Base it on what the user said, and add no principles they did not state.
 
 ```markdown
-# 투자 방식
+# How I invest
 
-## 한 줄 요약
-## 기간과 운용
-## 종목 고르는 기준
-## 비중과 현금
-## 손절과 매도
-## 피하는 것
+## In one line
+## Holding period and pace
+## How I pick stocks
+## Position size and cash
+## Stop-losses and selling
+## What I avoid
 ```
 
-## 마무리
+## Wrap up
 
-1. 정한 내용을 다섯 줄 이내로 보여 주고 확인을 받는다.
-2. 세 파일을 쓴다.
-3. `python3 -I {{ENGINE}}/paper.py status`로 `rules`가 반영됐는지 확인한다.
-4. 모의투자 탭에서 "계획 세우기"를 누르면 AI가 이 성향으로 첫 포트폴리오를 만든다고 알려 준다.
+1. Show the decisions in five lines or fewer and get a yes.
+2. Write the three files.
+3. Run `python3 -I {{ENGINE}}/paper.py status` and check that `rules` reflects them.
+4. Tell them that pressing "Make plan" in the Paper Trade panel has the AI build a first portfolio from this profile.

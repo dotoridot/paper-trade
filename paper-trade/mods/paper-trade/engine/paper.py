@@ -4,21 +4,21 @@
 Data lives in $PAPER_HOME (default ~/.paper-trade). Personal strategy limits are read from
 $PAPER_HOME/strategy.json and order rules from $PAPER_HOME/rules.json; both are optional.
 
-  paper.py search 하이닉스
+  paper.py search hynix
   paper.py quote 000660 NVDA.O
   paper.py buy 000660 3 [--limit 1300000] [--source user|ai] [--reason TEXT]
   paper.py sell 000660 1 [--limit ...]
   paper.py cancel ORDER_ID
-  paper.py why ORDER_ID "쉬운 말로 쓴 주문 이유"
+  paper.py why ORDER_ID "the reason in plain words"
   paper.py tick
   paper.py status
-  paper.py view 000660 [--tf day|week|month] [--count 200]   차트, 호가, 투자정보
-  paper.py board                                             지수와 관심 종목
-  paper.py fin 000660                                        연간 재무 지표
-  paper.py pulse                                             AI 판단 한 번에 필요한 자료
-  paper.py plan [--check] [--draft] [--reach]                AI 계획 보기와 검사
-  paper.py review final                                      검사한 초안을 계획으로 확정
-  paper.py journal 행동 "이유"                                AI 판단 기록
+  paper.py view 000660 [--tf day|week|month] [--count 200]   chart, order book, key facts
+  paper.py board                                             indices and watchlist
+  paper.py fin 000660                                        annual financials
+  paper.py pulse                                             everything one AI decision reads
+  paper.py plan [--check] [--draft] [--reach]                show or check the AI plan
+  paper.py review final                                      make the checked draft the plan
+  paper.py journal ACTION "reason"                           log an AI decision
   paper.py watch add|rm 000660
 """
 import argparse
@@ -39,23 +39,23 @@ EQUITY = HOME / "equity.csv"
 RULES = HOME / "rules.json"
 WATCH = HOME / "watch.json"
 DEFAULT_WATCH = ["000660", "005930", "035420"]
-PLAN = HOME / "portfolio.json"  # AI의 단기·중기 포트폴리오
-JOURNAL = HOME / "journal.jsonl"  # 30분 판단 기록
-DRAFT = HOME / "portfolio.draft.json"  # 검사 전 초안
-PROFILE = HOME / "investor_profile.md"  # 온보딩에서 사용자와 함께 쓴 투자 성향
-# 계획과 AI 매수의 한도. strategy.json이 있으면 같은 이름의 값을 덮어쓴다.
+PLAN = HOME / "portfolio.json"  # the AI's short- and medium-term portfolio
+JOURNAL = HOME / "journal.jsonl"  # one line per AI decision
+DRAFT = HOME / "portfolio.draft.json"  # draft before checks
+PROFILE = HOME / "investor_profile.md"  # written with the user during onboarding
+# Limits on plans and AI buys. strategy.json overrides any of these by name.
 DEFAULT_STRATEGY = {
-    "min_shares": 3,  # 나눠 사고 절반 손절이 가능한 최소 수량
-    "max_names": 6,  # 단기·중기를 합친 최대 종목 수
-    "max_group_pct": 40,  # 같은 수요에 기대는 묶음의 합계 상한
-    "add_min_pnl_pct": 3.0,  # 목표 절반을 넘긴 뒤 추가 매수는 평가이익이 이만큼 날 때만
-    "dip_stop_pct": -2.0,  # 코스피가 이만큼 빠진 날은 AI가 새로 사지도 더 사지도 않는다
-    "spike_pct": 10.0,  # 직전 거래일이 이만큼 오른 종목은 다음 날 첫 매수를 하지 않는다
-    "open_calm_hhmm": "0930",  # 장 시작 직후의 갭과 급변을 따라 사지 않는다
-    "pulse_min_value_eok": 300,  # 급등 목록에서 거래가 적은 종목을 거른다
-    "exclude": [],  # 사용자가 제외한 종목코드
-    # 역할별 비중 한도. 비어 있으면 계획 항목의 role을 검사하지 않는다. 예:
-    # {"대표주": {"max_pct": 40}, "부품사": {"min_pct": 30, "fin": {"years": 2, "margin": 8, "debt": 150, "quick": 80}}}
+    "min_shares": 3,  # fewest shares that still allow buying in parts and a half stop-loss
+    "max_names": 6,  # most names across short and medium term
+    "max_group_pct": 40,  # cap on names that depend on the same demand
+    "add_min_pnl_pct": 3.0,  # past half the target, add only at this unrealized gain
+    "dip_stop_pct": -2.0,  # no AI buys on days KOSPI falls this much
+    "spike_pct": 10.0,  # no first buy the day after a jump this big
+    "open_calm_hhmm": "0930",  # no AI buys before this time (opening gaps)
+    "pulse_min_value_eok": 300,  # drop thinly traded names (100M KRW units) from the movers list
+    "exclude": [],  # codes the user never wants bought
+    # Weight limits per role. Empty means plan items need no role. Example:
+    # {"leader": {"max_pct": 40}, "supplier": {"min_pct": 30, "fin": {"years": 2, "margin": 8, "debt": 150, "quick": 80}}}
     "roles": {},
 }
 
@@ -71,7 +71,7 @@ def read_settings(path):
     try:
         return json.loads(path.read_text())
     except ValueError as e:
-        raise SystemExit(f"{path} 형식 오류: {e}")
+        raise SystemExit(f"{path} is not valid JSON: {e}")
 
 
 STRATEGY = load_strategy(HOME / "strategy.json")
@@ -86,7 +86,7 @@ PULSE_MIN_VALUE_EOK = STRATEGY["pulse_min_value_eok"]
 EXCLUDE = set(STRATEGY["exclude"])
 ROLES = STRATEGY["roles"]
 START_CASH = 10_000_000
-KRW_ONLY = 1.0  # 지금은 국내 주식만 다룬다. 원장의 통화 처리는 해외 확장을 위해 남겨 둔다.
+KRW_ONLY = 1.0  # Korean stocks only for now; the ledger keeps currencies for a later expansion.
 UA = "Mozilla/5.0"
 DEFAULT_RULES = {
     "max_position_pct": 30.0,
@@ -102,7 +102,7 @@ DEFAULT_RULES = {
 
 def http_json(url):
     req = urllib.request.Request(url, headers={"User-Agent": UA})
-    for wait in (0.5, 1.5, None):  # 잠자기 해제·네트워크 전환 직후의 일시적 DNS 실패를 넘긴다.
+    for wait in (0.5, 1.5, None):  # ride out DNS failures right after sleep or a network switch
         try:
             return json.loads(urllib.request.urlopen(req, timeout=8).read())
         except urllib.error.HTTPError:
@@ -187,7 +187,7 @@ def fetch_finance(sym):
     about = " ".join(v for v in (raw.get("corporationSummary") or {}).values() if isinstance(v, str))
     years = [{"key": t["key"], "label": t["title"], "estimate": t.get("isConsensus") == "Y"} for t in d["trTitleList"]]
     rows = {r["title"]: [(r["columns"].get(y["key"]) or {}).get("value") for y in years] for r in d["rowList"]}
-    return {"sym": sym, "about": about, "years": [y["label"] + (" 추정" if y["estimate"] else "") for y in years], "rows": rows}
+    return {"sym": sym, "about": about, "years": [y["label"] + (" est." if y["estimate"] else "") for y in years], "rows": rows}
 
 
 def fetch_news(sym, size=8):
@@ -252,7 +252,7 @@ def edit_watch(action, sym):
 
 def board():
     market = []
-    for path, name in (("domestic/index/KOSPI", "코스피"), ("domestic/index/KOSDAQ", "코스닥"), ("domestic/index/KPI200", "코스피200")):
+    for path, name in (("domestic/index/KOSPI", "KOSPI"), ("domestic/index/KOSDAQ", "KOSDAQ"), ("domestic/index/KPI200", "KOSPI 200")):
         try:
             market.append(fetch_index(path, name))
         except (OSError, ValueError, KeyError, IndexError):
@@ -328,67 +328,67 @@ def load_plan():
 def plan_errors(plan, max_pct):
     errors, seen = [], set()
     if not (plan.get("market") or {}).get("summary"):
-        errors.append("market.summary 없음")
+        errors.append("market.summary is missing")
     total = plan.get("cash_pct", 0)
     for book in ("short", "medium"):
         for item in plan.get(book, []):
             sym = str(item.get("sym", ""))
             for key in ("name", "theme", "target_pct", "why", "exit"):
                 if item.get(key) in (None, ""):
-                    errors.append(f"{book} {sym}: {key} 없음")
+                    errors.append(f"{book} {sym}: {key} is missing")
             if ROLES and item.get("role") in (None, ""):
-                errors.append(f"{book} {sym}: role 없음")
+                errors.append(f"{book} {sym}: role is missing")
             elif ROLES and item["role"] not in ROLES:
-                errors.append(f"{book} {sym}: role은 {'·'.join(ROLES)} 중 하나")
+                errors.append(f"{book} {sym}: role must be one of {', '.join(ROLES)}")
             if len(sym) != 6:
-                errors.append(f"{book} {sym}: 종목코드 형식 오류")
+                errors.append(f"{book} {sym}: not a 6-character stock code")
             if sym in EXCLUDE:
-                errors.append(f"{book} {sym}: 사용자 제외 종목")
+                errors.append(f"{book} {sym}: excluded by the user")
             if sym in seen:
-                errors.append(f"{sym}: 단기·중기 중복")
+                errors.append(f"{sym}: listed in both short and medium term")
             seen.add(sym)
             target = item.get("target_pct") or 0
             if target > max_pct:
-                errors.append(f"{book} {sym}: 비중 한도 {max_pct}% 초과")
+                errors.append(f"{book} {sym}: over the {max_pct}% position limit")
             total += target
     if total > 100.5:
-        errors.append(f"목표 비중 합계 {total}%가 100%를 넘음")
+        errors.append(f"target weights total {total}%, over 100%")
     if len(seen) > MAX_NAMES:
-        errors.append(f"{len(seen)}종목: 최대 {MAX_NAMES}종목")
+        errors.append(f"{len(seen)} names: at most {MAX_NAMES}")
     groups = {}
     for item in plan_items(plan):
         key = item.get("group") or item.get("theme")
         groups[key] = groups.get(key, 0) + (item.get("target_pct") or 0)
-    errors += [f"묶음 {k}: 합계 {v}%가 {MAX_GROUP_PCT}% 초과" for k, v in groups.items() if v > MAX_GROUP_PCT]
+    errors += [f"group {k}: {v}% total, over {MAX_GROUP_PCT}%" for k, v in groups.items() if v > MAX_GROUP_PCT]
     for role, limit in ROLES.items():
         total_role = sum(i.get("target_pct") or 0 for i in plan_items(plan) if i.get("role") == role)
         if "max_pct" in limit and total_role > limit["max_pct"]:
-            errors.append(f"{role} 합계 {total_role}%가 {limit['max_pct']}% 초과")
+            errors.append(f"{role} total {total_role}% is over {limit['max_pct']}%")
         if "min_pct" in limit and total_role < limit["min_pct"]:
-            errors.append(f"{role} 합계 {total_role}%가 {limit['min_pct']}% 미만")
+            errors.append(f"{role} total {total_role}% is under {limit['min_pct']}%")
     return errors
 
 
-def parts_fin_errors(sym, fin, bar, role="부품사"):
+def parts_fin_errors(sym, fin, bar, role="supplier"):
     """A role with a financial bar must clear it on reported (not estimated) years."""
     def nums(title):
-        vals = [v for v, y in zip(fin["rows"].get(title, []), fin["years"]) if not y.endswith("추정")]
+        vals = [v for v, y in zip(fin["rows"].get(title, []), fin["years"]) if not y.endswith("est.")]
         try:
             return [float(str(v).replace(",", "")) for v in vals]
         except ValueError:
             return None
     op, margin, debt, quick = (nums(t) for t in ("영업이익", "영업이익률", "부채비율", "당좌비율"))
     if not (op and margin and debt and quick) or len(op) < bar["years"]:
-        return [f"{sym}: {role} 재무를 확인할 수 없음"]
+        return [f"{sym}: cannot check the {role} financials"]
     errors = []
     if any(v <= 0 for v in op[-bar["years"]:]):
-        errors.append(f"{sym}: 최근 {bar['years']}개 연도 중 영업적자")
+        errors.append(f"{sym}: operating loss in the last {bar['years']} years")
     if margin[-1] < bar["margin"]:
-        errors.append(f"{sym}: 영업이익률 {margin[-1]}% < {bar['margin']}%")
+        errors.append(f"{sym}: operating margin {margin[-1]}% < {bar['margin']}%")
     if debt[-1] > bar["debt"]:
-        errors.append(f"{sym}: 부채비율 {debt[-1]}% > {bar['debt']}%")
+        errors.append(f"{sym}: debt ratio {debt[-1]}% > {bar['debt']}%")
     if quick[-1] < bar["quick"]:
-        errors.append(f"{sym}: 당좌비율 {quick[-1]}% < {bar['quick']}%")
+        errors.append(f"{sym}: quick ratio {quick[-1]}% < {bar['quick']}%")
     return errors
 
 
@@ -402,22 +402,22 @@ def feasibility_errors(plan, equity, quotes):
     for item in plan_items(plan):
         q = quotes[item["sym"]]
         if not q["tradable"]:
-            errors.append(f"{item['sym']}: 거래 불가")
+            errors.append(f"{item['sym']}: not tradable")
         budget = equity * item["target_pct"] / 100
         if budget // q["price"] < MIN_SHARES:
-            errors.append(f"{item['sym']}: 목표 {budget:,.0f}원으로 현재가 {q['price']:,.0f}원에 {MIN_SHARES}주를 살 수 없음")
+            errors.append(f"{item['sym']}: a {budget:,.0f} KRW target cannot buy {MIN_SHARES} shares at {q['price']:,.0f} KRW")
     return errors
 
 
 def buy_errors(item, pos, price, total, kospi_pct, hhmm, last_day_pct=None):
     """AI buys: none in the opening half hour or on a dip day; adds only on a real gain."""
     if hhmm < OPEN_CALM_HHMM:
-        return [f"장 시작 직후({OPEN_CALM_HHMM[:2]}:{OPEN_CALM_HHMM[2:]} 전)에는 AI가 사지 않습니다"]
+        return [f"the AI does not buy before {OPEN_CALM_HHMM[:2]}:{OPEN_CALM_HHMM[2:]}"]
     if kospi_pct is not None and kospi_pct <= DIP_STOP_PCT:
-        return [f"코스피 {kospi_pct}%: {DIP_STOP_PCT}% 이하로 빠진 날은 새로 사지도 더 사지도 않습니다"]
+        return [f"KOSPI {kospi_pct}%: no AI buys on days it falls {DIP_STOP_PCT}% or more"]
     if not pos:
         if last_day_pct is not None and last_day_pct >= SPIKE_PCT:
-            return [f"직전 거래일 +{last_day_pct}% 급등 다음 날은 첫 매수를 하지 않습니다(기준 +{SPIKE_PCT:.0f}%)"]
+            return [f"up +{last_day_pct}% last session: no first buy the day after a +{SPIKE_PCT:.0f}% jump"]
         return []
     return hold_errors(item, (price / pos["avg"] - 1) * 100, pos["qty"] * price / total * 100)
 
@@ -425,13 +425,13 @@ def buy_errors(item, pos, price, total, kospi_pct, hhmm, last_day_pct=None):
 def hold_errors(item, pnl, weight):
     """The buy guards that depend on the position itself, not on the clock or the index."""
     if pnl < 0:
-        return [f"손실 중({pnl:.1f}%)인 종목은 더 사지 않습니다"]
+        return [f"at a loss ({pnl:.1f}%): the AI does not add to losers"]
     if weight >= item["target_pct"] / 2 and pnl < ADD_MIN_PNL_PCT:
-        return [f"목표 절반을 넘긴 뒤 추가 매수는 평가이익 +{ADD_MIN_PNL_PCT:.0f}% 이상일 때만 합니다(현재 {pnl:.1f}%)"]
+        return [f"past half the target, adds need +{ADD_MIN_PNL_PCT:.0f}% unrealized gain (now {pnl:.1f}%)"]
     return []
 
 
-STOP_HORIZONS = (1, 3, 5)  # 손절 뒤 몇 거래일 종가와 비교할지 (AI가 정한 임시값)
+STOP_HORIZONS = (1, 3, 5)  # sessions after a stop-loss to compare closes with
 
 
 def stop_review(trades, candles, partial_day=None):
@@ -442,7 +442,7 @@ def stop_review(trades, candles, partial_day=None):
             continue
         day = t["at"][:10].replace("-", "")
         later = [c for c in candles.get(t["sym"], []) if c["d"] > day]
-        closed = [c for c in later if c["d"] != partial_day]  # 장중의 오늘 봉은 종가가 아니다.
+        closed = [c for c in later if c["d"] != partial_day]  # today's intraday candle is not a close
         saved = lambda close: round((t["price"] - close) * t["qty"])
         after = {}
         for n in STOP_HORIZONS:
@@ -494,7 +494,7 @@ def plan_check(plan, r):
 
 def finalize_unreviewed(draft):
     """The checked draft becomes final, marked so nobody reads it as reviewed by anyone else."""
-    keep = lambda items: [{**i, "review": {"signal": "미평가", "reason": "외부 평가 없음"}} for i in items]
+    keep = lambda items: [{**i, "review": {"signal": "unreviewed", "reason": "no outside review"}} for i in items]
     return {**draft, "short": keep(draft.get("short", [])), "medium": keep(draft.get("medium", [])), "rejected": [], "as_of": now()}
 
 
@@ -510,7 +510,7 @@ def plan_view(plan, rows):
 
     for book in ("short", "medium"):
         view[book] = [reach(i) for i in plan.get(book, [])]
-    # 목표 비중이 아니라 엔진 규칙상 오늘 닿을 수 있는 현금. 계획에 없는 보유 종목은 팔 것이므로 현금으로 센다.
+    # Cash the engine rules let the account reach today, not the target. Holdings outside the plan count as cash since they will be sold.
     view["cash_reach_pct"] = round(100 - sum(i["reach_pct"] for b in ("short", "medium") for i in view[b]), 1)
     view["unplanned"] = [{"sym": x["sym"], "name": x["name"], "weight": x["weight"]} for x in rows if x["sym"] not in planned]
     return view
@@ -611,24 +611,24 @@ def reserved(s, fx_price):
 
 def submit(s, sym, side, qty, limit, source, reason, quote, fx, r):
     if qty <= 0:
-        raise SystemExit("수량은 1 이상이어야 합니다")
+        raise SystemExit("quantity must be at least 1")
     if not quote["tradable"]:
-        raise SystemExit(f"{quote['name']}: 거래 불가 상태")
+        raise SystemExit(f"{quote['name']}: not tradable")
     px = limit or quote["price"]
     cost = krw(px * qty, quote["currency"], fx) * (1 + (r["fee_us_pct"] if is_us(sym) else r["fee_kr_pct"]) / 100)
     if side == "buy":
         promised = reserved(s, lambda o: krw(o["limit"] or o["ref"], o["currency"], fx))
         if cost + promised > s["cash"]:
-            raise SystemExit(f"잔고 부족: 필요 {cost:,.0f}원, 가용 {s['cash'] - promised:,.0f}원")
+            raise SystemExit(f"not enough cash: need {cost:,.0f} KRW, have {s['cash'] - promised:,.0f} KRW")
         if source == "ai":
             total, rows = equity(s, {sym: quote}, fx)
             held = next((x["value"] for x in rows if x["sym"] == sym), 0)
             if (held + cost) / total * 100 > r["max_position_pct"]:
-                raise SystemExit(f"비중 한도 {r['max_position_pct']}% 초과")
+                raise SystemExit(f"over the {r['max_position_pct']}% position limit")
     else:
         pending = sum(o["qty"] for o in s["orders"] if o["status"] == "open" and o["side"] == "sell" and o["sym"] == sym)
         if s["positions"].get(sym, {}).get("qty", 0) - pending < qty:
-            raise SystemExit("보유 수량 부족")
+            raise SystemExit("not enough shares held")
     o = {"id": s["next_id"], "sym": sym, "name": quote["name"], "side": side, "qty": qty, "limit": limit,
          "ref": quote["price"], "currency": quote["currency"], "status": "open", "created": now(),
          "source": source, "reason": reason}
@@ -653,7 +653,7 @@ def fill_if_possible(s, o, q, fx, r):
     pnl = None
     if o["side"] == "buy":
         if value + fee > s["cash"]:
-            o["status"], o["note"] = "rejected", "체결 시 잔고 부족"
+            o["status"], o["note"] = "rejected", "not enough cash at fill"
             return False
         s["cash"] -= value + fee
         if p:
@@ -664,7 +664,7 @@ def fill_if_possible(s, o, q, fx, r):
                                          "currency": o["currency"], "opened": now(), "cut": 0}
     else:
         if not p or p["qty"] < o["qty"]:
-            o["status"], o["note"] = "rejected", "체결 시 보유 수량 부족"
+            o["status"], o["note"] = "rejected", "not enough shares at fill"
             return False
         s["cash"] += value - fee - tax
         pnl = krw((px - p["avg"]) * o["qty"], o["currency"], fx) - fee - tax
@@ -690,9 +690,9 @@ def apply_stops(s, quotes, fx, r):
             continue
         change = (q["price"] / p["avg"] - 1) * 100
         if change <= r["stop_full_pct"]:
-            qty, why = p["qty"], f"{r['stop_full_pct']}% 도달: 전량 손절"
+            qty, why = p["qty"], f"hit {r['stop_full_pct']}%: full stop-loss"
         elif change <= r["stop_first_pct"] and p.get("cut", 0) == 0:
-            qty, why = max(1, int(p["qty"] * r["stop_first_sell_ratio"])), f"{r['stop_first_pct']}% 도달: 분할 손절"
+            qty, why = max(1, int(p["qty"] * r["stop_first_sell_ratio"])), f"hit {r['stop_first_pct']}%: partial stop-loss"
             p["cut"] = 1
         else:
             continue
@@ -761,7 +761,7 @@ def main():
         o.add_argument("--limit", type=float)
         o.add_argument("--source", default="user", choices=["user", "ai"])
         o.add_argument("--reason", default="")
-        o.add_argument("--why", default="", help="사용자에게 보여 줄 쉬운 말의 이유")
+        o.add_argument("--why", default="", help="the reason in plain words, shown to the user")
     sub.add_parser("cancel").add_argument("id", type=int)
     y = sub.add_parser("why")
     y.add_argument("id", type=int)
@@ -795,7 +795,7 @@ def main():
     w.add_argument("sym")
     a = p.parse_args()
     if a.cmd in ("buy", "sell") and os.environ.get("PAPER_SOURCE") == "ai":
-        a.source = "ai"  # run.sh가 AI 실행에 지정한다. --source를 빠뜨려도 AI 매수 제한이 적용된다.
+        a.source = "ai"  # set by run.sh for AI runs, so AI buy limits apply even without --source ai
     HOME.mkdir(parents=True, exist_ok=True)
     r = rules()
     if a.cmd == "search":
@@ -806,14 +806,14 @@ def main():
         print(json.dumps([fetch_quote(x) for x in a.syms], ensure_ascii=False))
     elif a.cmd in ("buy", "sell"):
         if is_us(a.sym):
-            raise SystemExit("국내 주식만 주문할 수 있습니다")
+            raise SystemExit("only Korean stocks can be ordered")
         if a.cmd == "buy" and a.source == "ai" and not plan_allows(load_plan(), a.sym):
-            raise SystemExit(f"{a.sym}: 최종 포트폴리오에 없는 종목은 AI가 살 수 없습니다")
+            raise SystemExit(f"{a.sym}: the AI can only buy names in the plan")
         q, fx = fetch_quote(a.sym), KRW_ONLY
         with Ledger() as s:
             if a.cmd == "buy" and a.source == "ai" and (plan := load_plan()):
                 item = next(i for i in plan_items(plan) if i["sym"] == a.sym)
-                kospi = fetch_index("domestic/index/KOSPI", "코스피")["change_pct"]
+                kospi = fetch_index("domestic/index/KOSPI", "KOSPI")["change_pct"]
                 pos = s["positions"].get(a.sym)
                 last_day = None if pos else (chart_now(a.sym) or {}).get("last_day_pct")
                 if errs := buy_errors(item, pos, q["price"], equity(s, {a.sym: q}, fx)[0], kospi,
@@ -827,20 +827,20 @@ def main():
         with Ledger() as s:
             o = next((x for x in s["orders"] if x["id"] == a.id and x["status"] == "open"), None)
             if not o:
-                raise SystemExit("미체결 주문이 아닙니다")
+                raise SystemExit("not an open order")
             o["status"] = "canceled"
         print(json.dumps(o, ensure_ascii=False))
     elif a.cmd == "why":
         with Ledger() as s:
             found = [x for x in s["orders"] + s["trades"] if x["id"] == a.id]
             if not found:
-                raise SystemExit("없는 주문입니다")
+                raise SystemExit("no such order")
             for x in found:
                 x["why"] = a.text
         print(json.dumps({"id": a.id, "why": a.text}, ensure_ascii=False))
     elif a.cmd == "tick":
         if not fetch_quote("005930")["open"]:
-            print(json.dumps({"filled": 0, "skipped": "장이 열려 있지 않습니다"}, ensure_ascii=False))
+            print(json.dumps({"filled": 0, "skipped": "market closed"}, ensure_ascii=False))
             return
         fx, kospi = KRW_ONLY, fetch_kospi()
         with Ledger() as s:
@@ -851,7 +851,7 @@ def main():
             print(json.dumps(status_json(s, r), ensure_ascii=False))
     elif a.cmd == "view":
         if is_us(a.sym):
-            raise SystemExit("국내 주식만 조회할 수 있습니다")
+            raise SystemExit("only Korean stocks are supported")
         print(json.dumps(view(a.sym, a.tf, a.count), ensure_ascii=False))
     elif a.cmd == "news":
         print(json.dumps(fetch_news(a.sym), ensure_ascii=False))
@@ -861,18 +861,18 @@ def main():
         print(json.dumps(macro(), ensure_ascii=False))
     elif a.cmd == "stops":
         with Ledger() as s:
-            trades = list(s["trades"])  # 시세 조회 동안 원장을 잠그지 않는다.
+            trades = list(s["trades"])  # don't hold the ledger lock while fetching quotes
         print(json.dumps(stop_review_now(trades), ensure_ascii=False, indent=1))
     elif a.cmd == "pulse":
         with Ledger() as s:
-            frozen = json.loads(json.dumps(s))  # 시세 조회 동안 원장을 잠그지 않는다.
-        print(json.dumps(pulse(frozen, r), ensure_ascii=False, indent=1))  # Read 도구가 줄 단위로 읽게 여러 줄로 쓴다.
+            frozen = json.loads(json.dumps(s))  # don't hold the ledger lock while fetching quotes
+        print(json.dumps(pulse(frozen, r), ensure_ascii=False, indent=1))  # multi-line so the Read tool can page through it
     elif a.cmd == "theme":
         print(json.dumps(theme_members(a.no), ensure_ascii=False))
     elif a.cmd == "plan":
         path = DRAFT if a.draft else PLAN
         if not path.exists():
-            raise SystemExit(f"{path.name} 없음")
+            raise SystemExit(f"{path.name} not found")
         plan = json.loads(path.read_text())
         if a.reach:
             with Ledger() as s:
@@ -889,7 +889,7 @@ def main():
             print(json.dumps({"ok": True}))
     elif a.cmd == "review":
         if not DRAFT.exists():
-            raise SystemExit("초안 없음")
+            raise SystemExit("no draft")
         final = finalize_unreviewed(json.loads(DRAFT.read_text()))
         errors = plan_check(final, r)
         if errors:
@@ -904,7 +904,7 @@ def main():
         print(json.dumps(board(), ensure_ascii=False))
     elif a.cmd == "watch":
         if is_us(a.sym):
-            raise SystemExit("국내 주식만 관심 종목에 넣을 수 있습니다")
+            raise SystemExit("only Korean stocks can be watched")
         print(json.dumps(edit_watch(a.action, a.sym), ensure_ascii=False))
 
 
@@ -912,4 +912,4 @@ if __name__ == "__main__":
     try:
         main()
     except urllib.error.URLError as e:
-        sys.exit(f"시세 조회 실패: {e}")
+        sys.exit(f"quote request failed: {e}")
