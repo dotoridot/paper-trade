@@ -1,4 +1,4 @@
-# Paper Trade
+# Paper Trade (Korean stocks)
 
 An AI paper trader for Korean stocks in one Herdr panel. You start with 10,000,000 KRW of virtual money, watch live KOSPI and KOSDAQ quotes, a candle chart and the order book, and place orders that fill against real prices. An AI you shape interviews you about how you invest, writes your investor profile, builds a short- and medium-term portfolio from it, and (if you turn it on) trades the account about every 30 minutes during market hours, explaining each trade in plain words. No broker, no API key, no real money.
 
@@ -39,7 +39,7 @@ Top to bottom, 10px padding, 8px gaps, cards are `surface` with 8px radius:
 
 - The panel runs programs: `python3` (the engine) and `bash run.sh`, which runs the `claude` CLI and uses the person's Claude plan. It reaches the network (Naver Finance). It reads and writes only `~/.paper-trade` (or `$PAPER_HOME`).
 - Naver Finance endpoints are unofficial and can change or block requests without notice. When one fails the panel keeps the last data and says so.
-- Korean stocks only. Prices are KRW; fees (0.015%), sell tax (0.20%) and market-order slippage (0.05%) are simulated.
+- Korean market only: KOSPI and KOSDAQ, KRW, the regular KRX session. Prices are KRW; fees (0.015%), sell tax (0.20%) and market-order slippage (0.05%) are simulated. To adapt it to another market, follow `docs/OTHER_MARKETS.md` at the repo root.
 - Naver's field names are Korean (`시총`, `52주 최고`, `영업이익`); the code keeps them as lookup keys and shows English labels.
 - If the folder is renamed, change `MOD` at the top of `main.js`, since the engine path is `appHome()/mods/<MOD>/engine`.
 - `exec` gives 30 seconds; anything longer must go through `run.sh start`.
